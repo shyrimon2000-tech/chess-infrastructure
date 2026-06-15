@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-deployment
+  labels:
+    app: chess-auth-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chess-auth-service
+  template:
+    metadata:
+      labels:
+        app: chess-auth-service
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+      containers:
+      - name: chess-auth-service
+        image: ghcr.io/shyrimon2000-tech/chess-auth-service:1.1.0
+        ports:
+        - containerPort: 8000
+        envFrom:
+        - secretRef:
+            name: auth-secret
+        - configMapRef:
+            name: auth-configmap
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 3
+          timeoutSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 3
+          timeoutSeconds: 5

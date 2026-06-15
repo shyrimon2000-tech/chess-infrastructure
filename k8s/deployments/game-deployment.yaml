@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: game-deployment
+  labels:
+    app: chess-game-service
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: chess-game-service
+  template:
+    metadata:
+      labels:
+        app: chess-game-service
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+      containers:
+      - name: chess-game-service
+        image: ghcr.io/shyrimon2000-tech/chess-game-service:1.0.0
+        ports:
+        - containerPort: 8000
+        envFrom:
+        - secretRef:
+            name: game-secret
+        - configMapRef:
+            name: game-configmap
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 3
+          timeoutSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 3
+          timeoutSeconds: 5
