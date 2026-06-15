@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: room-db
+spec:
+  serviceName: room-db-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: room-db
+  template:
+    metadata:
+      labels:
+        app: room-db
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        ports:
+        - containerPort: 3306
+        envFrom:
+        - secretRef:
+            name: room-db-secret
+        volumeMounts:
+        - name: room-db-data
+          mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+  - metadata:
+      name: room-db-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 5Gi

@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: game-db
+spec:
+  serviceName: game-db-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: game-db
+  template:
+    metadata:
+      labels:
+        app: game-db
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        ports:
+        - containerPort: 3306
+        envFrom:
+        - secretRef:
+            name: game-db-secret
+        volumeMounts:
+        - name: game-db-data
+          mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+  - metadata:
+      name: game-db-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 5Gi
