@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: game-db-networkpolicy
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: game-db
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: chess-game-service
+    ports:
+    - protocol: TCP
+      port: 3306
