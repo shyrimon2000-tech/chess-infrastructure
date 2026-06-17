@@ -5,6 +5,7 @@ metadata:
   labels:
     app: chess-auth-service
 spec:
+  serviceName: auth-service
   replicas: 1
   selector:
     matchLabels:

@@ -3,7 +3,7 @@ kind: StatefulSet
 metadata:
   name: game-db
 spec:
-  serviceName: game-db-headless
+  serviceName: game-db-service
   replicas: 1
   selector:
     matchLabels:
@@ -28,7 +28,8 @@ spec:
   - metadata:
       name: game-db-data
     spec:
+      storageClassName: ""
       accessModes: ["ReadWriteOnce"]
       resources:
         requests:
-          storage: 5Gi
+          storage: 1Gi

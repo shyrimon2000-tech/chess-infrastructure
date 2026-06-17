@@ -3,7 +3,7 @@ kind: StatefulSet
 metadata:
   name: room-db
 spec:
-  serviceName: room-db-headless
+  serviceName: room-db-service
   replicas: 1
   selector:
     matchLabels:
@@ -28,7 +28,8 @@ spec:
   - metadata:
       name: room-db-data
     spec:
+      storageClassName: ""
       accessModes: ["ReadWriteOnce"]
       resources:
         requests:
-          storage: 5Gi
+          storage: 1Gi

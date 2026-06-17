@@ -3,7 +3,7 @@ kind: StatefulSet
 metadata:
   name: auth-db
 spec:
-  serviceName: auth-db-headless
+  serviceName: auth-db-service
   replicas: 1
   selector:
     matchLabels:
@@ -28,7 +28,8 @@ spec:
   - metadata:
       name: auth-db-data
     spec:
+      storageClassName: ""
       accessModes: ["ReadWriteOnce"]
       resources:
         requests:
-          storage: 5Gi
+          storage: 2Gi

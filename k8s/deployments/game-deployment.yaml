@@ -5,6 +5,7 @@ metadata:
   labels:
     app: chess-game-service
 spec:
+  serviceName: game-service
   replicas: 3
   selector:
     matchLabels:
