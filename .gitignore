@@ -1,3 +1,7 @@
 ﻿k8s/secrets/
 k8s/configmaps/
-
+.env
+.env.example
+docker-compose.yml
+nginx.dev.conf
+tests/
