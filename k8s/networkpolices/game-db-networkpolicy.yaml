@@ -9,6 +9,7 @@ spec:
       app: game-db
   policyTypes:
   - Ingress
+  - Egress
   ingress:
   - from:
     - podSelector:

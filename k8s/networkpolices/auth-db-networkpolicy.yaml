@@ -9,6 +9,7 @@ spec:
       app: auth-db
   policyTypes:
   - Ingress
+  - Egress
   ingress:
   - from:
     - podSelector:

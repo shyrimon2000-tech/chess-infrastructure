@@ -9,6 +9,7 @@ spec:
       app: room-db
   policyTypes:
   - Ingress
+  - Egress
   ingress:
   - from:
     - podSelector:
