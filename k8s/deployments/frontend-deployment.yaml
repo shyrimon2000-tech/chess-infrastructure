@@ -5,8 +5,7 @@ metadata:
   labels:
     app: chess-frontend-service
 spec:
-  serviceName: frontend-service
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: chess-frontend-service
