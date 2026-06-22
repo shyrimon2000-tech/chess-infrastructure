@@ -5,6 +5,14 @@ metadata:
   labels:
     pv: redis-pv
 spec:
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: db-group
+          operator: In
+          values:
+          - group-2
   storageClassName: ""
   capacity:
     storage: 1Gi
