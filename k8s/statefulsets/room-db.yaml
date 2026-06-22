@@ -24,6 +24,13 @@ spec:
         volumeMounts:
         - name: room-db-data
           mountPath: /var/lib/mysql
+        resources:
+          requests:
+            memory: "600Mi"
+            cpu: "200m"
+          limits:
+            memory: "800Mi"
+            cpu: "400m"
   volumeClaimTemplates:
   - metadata:
       name: room-db-data
