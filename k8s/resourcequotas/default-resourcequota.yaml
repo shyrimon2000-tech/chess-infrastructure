@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  namespace: default
+  name: default-resourcequota
+spec:
+  hard:
+    requests.cpu: "2180m"
+    requests.memory: "4100Mi"
+    limits.cpu: "3650m"
+    limits.memory: "5200Mi"
