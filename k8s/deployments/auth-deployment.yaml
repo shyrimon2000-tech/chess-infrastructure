@@ -16,9 +16,16 @@ spec:
     spec:
       imagePullSecrets:
         - name: ghcr-secret
+      initContainers:
+      - name: init-auth-db
+        image: ghcr.io/shyrimon2000-tech/chess-auth-service:1.0.0
+        command: ["alembic", "upgrade", "head"]
+        envFrom:
+        - secretRef:
+            name: auth-secret
       containers:
       - name: chess-auth-service
-        image: ghcr.io/shyrimon2000-tech/chess-auth-service:1.1.0
+        image: ghcr.io/shyrimon2000-tech/chess-auth-service:1.0.0
         ports:
         - containerPort: 8000
         envFrom:
