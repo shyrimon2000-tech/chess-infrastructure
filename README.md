@@ -85,6 +85,17 @@ helm/install-ingress-controller.sh
 kubectl patch svc ingress-nginx-controller -n ingress-nginx -p '{"spec": {"type": "NodePort"}}'
 ```
 
+### Metrics server
+
+```bash
+helm/install-metrics-server.sh
+```
+
+Enables `kubectl top pods` and `kubectl top nodes` for real-time resource consumption. Required for HorizontalPodAutoscaler.
+
+The script patches metrics-server with `--kubelet-insecure-tls` to handle self-signed kubelet certificates common in kubeadm clusters.
+
+
 ## External Access via VPN + Caddy
 
 After the local cluster is running, external HTTPS access was set up without a cloud load balancer:
@@ -190,3 +201,38 @@ kubectl logs <pod-name> -c migrate
 **Cause:** Redis configured with `--maxmemory 256mb` but `requests.memory` was set to `128Mi`, so the scheduler underestimates actual usage.
 
 **Solution:** `requests.memory` set to `280Mi` (256mb data + ~24Mi overhead). `limits.memory` set to `300Mi`.
+
+---
+
+### Fewer replicas running than desired (quota exceeded)
+
+**Symptom:** `kubectl get pods` shows fewer running replicas than declared. `kubectl get events --field-selector reason=FailedCreate` shows quota errors with memory values much higher than declared in the manifest.
+
+**Cause:** initContainers in auth, room, and game deployments had no explicit `resources` block. The namespace LimitRange auto-injects default values into any container without explicit resources (in this cluster: `410Mi` request / `478Mi` limit for memory). The effective pod resource is `max(initContainer, mainContainer)`, so pods consumed significantly more quota than what the main container declared.
+
+**Solution:** Add explicit `resources` to all initContainers. For `alembic upgrade head`, lean values are sufficient:
+```yaml
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "50m"
+  limits:
+    memory: "256Mi"
+    cpu: "150m"
+```
+
+Always declare `resources` on every container you control — including initContainers. LimitRange defaults are a safety net for unknown containers, not a substitute for explicit declarations.
+
+---
+
+### Rolling update stuck after fixing initContainer resources
+
+**Symptom:** After fixing initContainer resources and running `kubectl apply`, the deployment stays at partial replicas. New pods fail with quota exceeded despite the fix.
+
+**Cause:** The existing pod was created before the fix and still holds quota based on old resource specs. Rolling update cannot proceed: it needs to create a new pod first (maxUnavailable=0 by default), but quota is blocked by the old pod's inflated reservation.
+
+**Solution:** Scale to 0, then back to the desired replica count:
+```bash
+kubectl scale deployment/<name> --replicas=0
+kubectl scale deployment/<name> --replicas=<desired>
+```
