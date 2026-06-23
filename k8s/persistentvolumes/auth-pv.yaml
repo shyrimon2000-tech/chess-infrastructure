@@ -5,6 +5,14 @@ metadata:
   labels:
     pv: auth-pv
 spec:
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: db-group
+          operator: In
+          values:
+          - group-1
   storageClassName: ""
   capacity:
     storage: 2Gi
