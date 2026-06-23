@@ -23,6 +23,13 @@ spec:
         envFrom:
         - secretRef:
             name: auth-secret
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "128Mi"
+          limits:
+            cpu: "150m"
+            memory: "256Mi"
       containers:
       - name: chess-auth-service
         image: ghcr.io/shyrimon2000-tech/chess-auth-service:1.0.0
