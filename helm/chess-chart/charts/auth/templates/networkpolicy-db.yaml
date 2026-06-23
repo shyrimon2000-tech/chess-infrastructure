@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: auth-db-networkpolicy
+spec:
+  podSelector:
+    matchLabels:
+      app: auth-db
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: chess-auth-service
+    ports:
+    - protocol: TCP
+      port: 3306

@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: room-db-networkpolicy
+spec:
+  podSelector:
+    matchLabels:
+      app: room-db
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: chess-room-service
+    ports:
+    - protocol: TCP
+      port: 3306

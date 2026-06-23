@@ -1,0 +1,27 @@
+{{- if .Values.db.hostPath.enabled }}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: auth-pv
+  labels:
+    pv: auth-pv
+spec:
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: db-group
+          operator: In
+          values:
+          - {{ .Values.db.nodeGroup }}
+  storageClassName: ""
+  capacity:
+    storage: {{ .Values.db.storage }}
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "{{ .Values.db.hostPath.path }}"
+  claimRef:
+    namespace: {{ .Release.Namespace }}
+    name: auth-db-data-auth-db-0
+  {{- end }}
