@@ -85,6 +85,49 @@ helm/install-ingress-controller.sh
 kubectl patch svc ingress-nginx-controller -n ingress-nginx -p '{"spec": {"type": "NodePort"}}'
 ```
 
+## External Access via VPN + Caddy
+
+After the local cluster is running, external HTTPS access was set up without a cloud load balancer:
+
+**Stack:** WireGuard VPN + Caddy reverse proxy (running on a separate VPS).
+
+**Traffic flow:**
+```
+Browser → HTTPS → Caddy (VPS) → WireGuard tunnel → cp:31857 → nginx ingress → services
+```
+
+**Setup steps:**
+
+1. Install WireGuard on control plane:
+```bash
+yum install wireguard-tools -y
+```
+
+2. Configure `/etc/wireguard/wg0.conf` — set `AllowedIPs = 10.8.0.0/24` (VPN subnet only, not `0.0.0.0/0`) and add `PersistentKeepalive = 25` to keep the tunnel alive.
+
+3. Enable WireGuard on startup:
+```bash
+systemctl enable wg-quick@wg0
+```
+
+4. Pin Calico to the physical interface so it doesn't pick up the WireGuard IP:
+```bash
+kubectl set env daemonset/calico-node -n kube-system IP_AUTODETECTION_METHOD=interface=ens160 -n kube-system
+```
+
+5. Add Caddy reverse proxy block on the VPS:
+```
+chess.yourdomain.com {
+    reverse_proxy <cp-vpn-ip>:31857
+}
+```
+
+Caddy handles TLS termination automatically via Let's Encrypt. The cluster only receives plain HTTP on the NodePort.
+
+**Warning:** Using `AllowedIPs = 0.0.0.0/0` on the control plane will route all traffic through the WireGuard tunnel, breaking Calico BGP and taking down pod networking. Always use the VPN subnet only.
+
+---
+
 ## Troubleshooting
 
 ### Tables do not exist on first deploy
