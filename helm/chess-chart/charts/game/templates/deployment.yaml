@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: game-deployment
+  labels:
+    app: chess-game-service
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: chess-game-service
+  template:
+    metadata:
+      labels:
+        app: chess-game-service
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+      initContainers:
+      - name: init-game-db
+        image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+        command: ["alembic", "upgrade", "head"]
+        envFrom:
+        - secretRef:
+            name: game-secret
+        resources:
+          {{- toYaml .Values.initContainer.resources | nindent 10 }}
+      containers:
+      - name: chess-game-service
+        image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+        ports:
+        - containerPort: 8000
+        envFrom:
+        - secretRef:
+            name: game-secret
+        - configMapRef:
+            name: game-configmap
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 3
+          timeoutSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 3
+          timeoutSeconds: 5
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}

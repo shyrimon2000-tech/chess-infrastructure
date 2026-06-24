@@ -1,0 +1,17 @@
+image: redis:7
+
+replicaCount: 1
+
+resources:
+  requests:
+    memory: "280Mi"
+    cpu: "100m"
+  limits:
+    memory: "300Mi"
+    cpu: "200m"
+
+storage: 1Gi
+nodeGroup: group-2
+hostPath:
+  enabled: true
+  path: "/mnt/data/redis"

@@ -1,6 +1,6 @@
 apiVersion: v2
 name: room
-description: Chess room service with MySQL database
+description: Chess room service with MySQL database and redis cache 
 type: application
 version: 0.1.0
 appVersion: "1.0.0"

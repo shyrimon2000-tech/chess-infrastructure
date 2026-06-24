@@ -1,0 +1,6 @@
+apiVersion: v2
+name: game
+description: Chess game service with MySQL database and redis cache
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
