@@ -1,0 +1,40 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: main-ingress
+  annotations:
+  {{- if .Values.ingress.nginx.enabled }}
+  {{- toYaml .Values.ingress.nginx.annotations | nindent 4 }}
+  {{- else if .Values.ingress.alb.enabled }}
+  {{- toYaml .Values.ingress.alb.annotations | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.nginx.enabled }}
+  ingressClassName: nginx
+  {{- else if .Values.ingress.alb.enabled }}
+  ingressClassName: alb
+  {{- end }}
+  rules:
+  - http:
+      paths:
+      - path: /api/rooms/(rooms.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: room-service
+            port:
+              number: 8000
+      - path: /api/(auth/.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: auth-service
+            port:
+              number: 8000
+      - path: /(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: frontend-service
+            port:
+              number: 8080
