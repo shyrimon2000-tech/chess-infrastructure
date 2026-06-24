@@ -1,3 +1,4 @@
+{{- if .Values.db.enabled }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -30,8 +31,9 @@ spec:
   - metadata:
       name: auth-db-data
     spec:
-      storageClassName: ""
+      storageClassName: {{ .Values.db.storageClassName | quote }}
       accessModes: ["ReadWriteOnce"]
       resources:
         requests:
           storage: {{ .Values.db.storage }}
+{{- end }}

@@ -1,3 +1,4 @@
+{{- if .Values.enabled }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -28,8 +29,9 @@ spec:
   - metadata:
       name: redis-data
     spec:
-      storageClassName: ""
+      storageClassName: {{ .Values.storageClassName | quote }}
       accessModes: ["ReadWriteOnce"]
       resources:
         requests:
           storage: {{ .Values.storage }}
+{{- end }}

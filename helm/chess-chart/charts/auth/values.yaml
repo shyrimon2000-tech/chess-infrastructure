@@ -31,6 +31,8 @@ secret:
   jwtSecretKey: ""
 
 db:
+  enabled: true
+  storageClassName: ""
   image: mysql:8.0
   resources:
     requests:

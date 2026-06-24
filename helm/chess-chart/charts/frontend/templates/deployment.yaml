@@ -1,3 +1,4 @@
+{{- if .Values.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -39,3 +40,4 @@ spec:
           timeoutSeconds: 5
         resources:
           {{- toYaml .Values.resources | nindent 10 }}
+{{- end }}

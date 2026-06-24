@@ -1,3 +1,6 @@
+enabled: true
+storageClassName: ""
+
 image: redis:7
 
 replicaCount: 1
