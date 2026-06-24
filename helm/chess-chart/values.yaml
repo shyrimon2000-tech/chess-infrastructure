@@ -44,3 +44,25 @@ limitrange:
       cpu: "50m"
       memory: "50Mi"
     type: Container
+
+frontend:
+  enabled: true
+
+auth:
+  db:
+    enabled: true
+    storageClassName: ""
+
+room:
+  db:
+    enabled: true
+    storageClassName: ""
+
+game:
+  db:
+    enabled: true
+    storageClassName: ""
+
+redis:
+  enabled: true
+  storageClassName: ""
