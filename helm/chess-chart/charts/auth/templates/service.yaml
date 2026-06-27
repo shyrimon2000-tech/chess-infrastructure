@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  labels:
+    service: auth-service
+spec:
+  type: ClusterIP
+  ports:
+  - name: chess-auth-service
+    port: 8000
+    targetPort: 8000
+  selector:
+    app: chess-auth-service

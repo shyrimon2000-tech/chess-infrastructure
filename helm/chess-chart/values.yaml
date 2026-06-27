@@ -1,0 +1,69 @@
+dockerconfigjson: |
+    {
+      "auths": {
+        "ghcr.io": {
+          "username": "<your-github-username>",
+          "password": "<your-ghcr-pat>",
+          "auth": ""
+        }
+      }
+    }
+
+ingress:
+  host: ""
+  nginx:
+    enabled: true
+    annotations:
+      nginx.ingress.kubernetes.io/use-regex: "true"
+      nginx.ingress.kubernetes.io/rewrite-target: /$1
+  alb:
+    enabled: false
+    host: ""
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+
+resourcequota:
+  hard:
+    requests.cpu: "2180m"
+    requests.memory: "4100Mi"
+    limits.cpu: "3650m"
+    limits.memory: "5200Mi"
+
+limitrange:
+  limits:
+  - default:
+      cpu: "300m"
+      memory: "478Mi"
+    defaultRequest:
+      cpu: "218m"
+      memory: "410Mi"
+    max:
+      cpu: "1"
+      memory: "1Gi"
+    min:
+      cpu: "50m"
+      memory: "50Mi"
+    type: Container
+
+frontend:
+  enabled: true
+
+auth:
+  db:
+    enabled: true
+    storageClassName: ""
+
+room:
+  db:
+    enabled: true
+    storageClassName: ""
+
+game:
+  db:
+    enabled: true
+    storageClassName: ""
+
+redis:
+  enabled: true
+  storageClassName: ""

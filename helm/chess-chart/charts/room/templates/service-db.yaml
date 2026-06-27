@@ -1,0 +1,16 @@
+{{- if .Values.db.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: room-db-service
+  labels:
+    service: room-db-service
+spec:
+  clusterIP: None
+  ports:
+  - name: mysql
+    port: 3306
+    targetPort: 3306
+  selector:
+    app: room-db
+{{- end }}

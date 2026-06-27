@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: game-service
+  labels:
+    service: game-service
+spec:
+  type: ClusterIP
+  ports:
+  - name: chess-game-service
+    port: 8000
+    targetPort: 8000
+  selector:
+    app: chess-game-service

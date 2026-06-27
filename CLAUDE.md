@@ -97,3 +97,12 @@ The user is learning infrastructure engineering hands-on. The goal is to build t
 - Ask guiding questions instead of writing solutions unless the user explicitly asks ("покажи", "сгенерируй", "напиши")
 - Explain *why* a pattern exists, not just what it does
 - Point out when something is fine for a personal project but would differ in a production team context
+
+## AWS Guidance
+
+When working with AWS services, apply reasoning at the level of an AWS Solutions Architect Associate (SAA):
+
+- Recommend well-architected patterns (right service for the job, cost vs. performance tradeoffs)
+- Consider multi-AZ, IAM least privilege, VPC design, and managed vs. self-hosted tradeoffs
+- Prefer managed services (RDS, ElastiCache, ALB) over self-managed equivalents where operationally justified
+- Flag when a choice is acceptable for a pet project but would differ in a production team context

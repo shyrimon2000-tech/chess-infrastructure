@@ -1,0 +1,39 @@
+{{- if .Values.db.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: room-db
+spec:
+  serviceName: room-db-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: room-db
+  template:
+    metadata:
+      labels:
+        app: room-db
+    spec:
+      containers:
+      - name: mysql
+        image: {{ .Values.db.image }}
+        ports:
+        - containerPort: 3306
+        envFrom:
+        - secretRef:
+            name: room-db-secret
+        volumeMounts:
+        - name: room-db-data
+          mountPath: /var/lib/mysql
+        resources:
+          {{- toYaml .Values.db.resources | nindent 10 }}
+  volumeClaimTemplates:
+  - metadata:
+      name: room-db-data
+    spec:
+      storageClassName: {{ .Values.db.storageClassName | quote }}
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: {{ .Values.db.storage }}
+{{- end }}

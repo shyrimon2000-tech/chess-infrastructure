@@ -1,0 +1,60 @@
+image:
+  repository: ghcr.io/shyrimon2000-tech/chess-game-service
+  tag: "1.0.0"
+
+replicaCount: 3
+
+hpa:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 60
+
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "250m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+
+initContainer:
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "128Mi"
+    limits:
+      cpu: "150m"
+      memory: "256Mi"
+
+config:
+  jwtAlgorithm: HS256
+  accessTokenExpireMinutes: "30"
+  refreshTokenExpireDays: "7"
+
+secret:
+  databaseUrl: ""
+  redisUrl: ""
+  jwtSecretKey: ""
+
+db:
+  enabled: true
+  storageClassName: ""
+  image: mysql:8.0
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "600Mi"
+    limits:
+      cpu: "400m"
+      memory: "800Mi"
+  secret:
+    rootPassword: ""
+    user: chess_user
+    password: ""
+    database: game_db
+  storage: 1Gi
+  nodeGroup: group-2
+  hostPath:
+    enabled: true
+    path: /mnt/data/game-db

@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: game-ingress
+  annotations:
+  {{- if .Values.ingress.nginx.enabled }}
+  {{- toYaml .Values.ingress.nginx.annotations | nindent 4 }}
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  {{- else if .Values.ingress.alb.enabled }}
+  {{- toYaml .Values.ingress.alb.annotations | nindent 4 }}
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
+  {{- end }}
+spec:
+  {{- if .Values.ingress.nginx.enabled }}
+  ingressClassName: nginx
+  {{- else if .Values.ingress.alb.enabled }}
+  ingressClassName: alb
+  {{- end }}
+  rules:
+  - {{- if .Values.ingress.host }}
+    host: {{ .Values.ingress.host }}
+    {{- end }}
+    http:
+      paths:
+      - path: /api/game/(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: game-service
+            port:
+              number: 8000

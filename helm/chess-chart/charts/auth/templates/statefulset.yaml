@@ -1,0 +1,39 @@
+{{- if .Values.db.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: auth-db
+spec:
+  serviceName: auth-db-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth-db
+  template:
+    metadata:
+      labels:
+        app: auth-db
+    spec:
+      containers:
+      - name: mysql
+        image: {{ .Values.db.image }}
+        ports:
+        - containerPort: 3306
+        envFrom:
+        - secretRef:
+            name: auth-db-secret
+        volumeMounts:
+        - name: auth-db-data
+          mountPath: /var/lib/mysql
+        resources:
+          {{- toYaml .Values.db.resources | nindent 10 }}
+  volumeClaimTemplates:
+  - metadata:
+      name: auth-db-data
+    spec:
+      storageClassName: {{ .Values.db.storageClassName | quote }}
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: {{ .Values.db.storage }}
+{{- end }}

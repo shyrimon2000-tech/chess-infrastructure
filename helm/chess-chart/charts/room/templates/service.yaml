@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: room-service
+  labels:
+    service: room-service
+spec:
+  type: ClusterIP
+  ports:
+  - name: chess-room-service
+    port: 8000
+    targetPort: 8000
+  selector:
+    app: chess-room-service

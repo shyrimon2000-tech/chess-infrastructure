@@ -1,0 +1,63 @@
+ingress:
+  host: "staging.chess.internal"
+
+resourcequota:
+  hard:
+    requests.cpu: "3100m"
+    requests.memory: "5000Mi"
+    limits.cpu: "6500m"
+    limits.memory: "8200Mi"
+
+frontend:
+  enabled: true
+
+auth:
+  hpa:
+    enabled: true
+  secret:
+    databaseUrl: ""
+    jwtSecretKey: ""
+  db:
+    storageClassName: gp3
+    hostPath:
+      enabled: false
+
+room:
+  hpa:
+    enabled: true
+  secret:
+    databaseUrl: ""
+    redisUrl: ""
+    jwtSecretKey: ""
+  db:
+    storageClassName: gp3
+    hostPath:
+      enabled: false
+
+game:
+  hpa:
+    enabled: true
+  secret:
+    databaseUrl: ""
+    redisUrl: ""
+    jwtSecretKey: ""
+  db:
+    storageClassName: gp3
+    hostPath:
+      enabled: false
+
+redis:
+  storageClassName: gp3
+  hostPath:
+    enabled: false
+
+dockerconfigjson: |
+    {
+      "auths": {
+        "ghcr.io": {
+          "username": "",
+          "password": "",
+          "auth": ""
+        }
+      }
+    }
