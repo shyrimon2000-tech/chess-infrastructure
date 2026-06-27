@@ -5,7 +5,9 @@ metadata:
   labels:
     app: chess-room-service
 spec:
+  {{- if not .Values.hpa.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       app: chess-room-service

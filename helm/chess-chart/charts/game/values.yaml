@@ -4,6 +4,12 @@ image:
 
 replicaCount: 3
 
+hpa:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 60
+
 resources:
   requests:
     memory: "256Mi"

@@ -4,6 +4,12 @@ image:
 
 replicaCount: 1
 
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+
 resources:
   requests:
     cpu: "50m"
