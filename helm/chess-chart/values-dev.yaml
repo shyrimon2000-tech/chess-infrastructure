@@ -1,0 +1,59 @@
+ingress:
+  host: "dev.chess.internal"
+
+resourcequota:
+  hard:
+    requests.cpu: "1300m"
+    requests.memory: "2900Mi"
+    limits.cpu: "2700m"
+    limits.memory: "4200Mi"
+
+frontend:
+  enabled: true
+
+auth:
+  secret:
+    databaseUrl: ""
+    jwtSecretKey: ""
+  db:
+    storageClassName: gp3
+    hostPath:
+      enabled: false
+
+room:
+  replicaCount: 1
+  secret:
+    databaseUrl: ""
+    redisUrl: ""
+    jwtSecretKey: ""
+  db:
+    storageClassName: gp3
+    hostPath:
+      enabled: false
+
+game:
+  replicaCount: 1
+  secret:
+    databaseUrl: ""
+    redisUrl: ""
+    jwtSecretKey: ""
+  db:
+    storageClassName: gp3
+    hostPath:
+      enabled: false
+
+redis:
+  storageClassName: gp3
+  hostPath:
+    enabled: false
+
+dockerconfigjson: |
+    {
+      "auths": {
+        "ghcr.io": {
+          "username": "",
+          "password": "",
+          "auth": ""
+        }
+      }
+    }

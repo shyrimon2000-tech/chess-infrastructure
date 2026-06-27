@@ -15,10 +15,57 @@ Four microservices deployed on Kubernetes:
 
 Each backend service runs on port `8000`. MySQL 8.0 per service (no shared database). Redis for game state pub/sub.
 
+## Environments
+
+| | Dev | Staging | Prod |
+|---|---|---|---|
+| Cluster | EKS shared | EKS shared | EKS dedicated |
+| Namespace | `dev` | `staging` | `default` |
+| Frontend | container | container | S3 + CloudFront |
+| Database | in-cluster MySQL | in-cluster MySQL | RDS |
+| Redis | in-cluster | in-cluster | ElastiCache |
+| DB Storage | EBS gp3 | EBS gp3 | managed (RDS) |
+| HPA | disabled | enabled | enabled |
+| Replicas | 1 per service | minReplicas (HPA) | minReplicas (HPA) |
+| ResourceQuota | low (1 replica) | based on maxReplicas | based on maxReplicas |
+| Ingress | nginx | nginx | ALB |
+| Secrets | plain Secret | plain Secret | ESO (External Secrets) |
+
+### HPA Configuration (Staging / Prod)
+
+| Service | Min Replicas | Max Replicas | Target CPU |
+|---|---|---|---|
+| auth | 1 | 3 | 70% |
+| room | 2 | 4 | 65% |
+| game | 3 | 6 | 60% |
+
+Game has the lowest CPU threshold (60%) because it handles real-time WebSocket connections — scaling earlier avoids latency spikes under load.
+
+### ResourceQuota
+
+| | Dev | Staging | Prod |
+|---|---|---|---|
+| requests.cpu | 1300m | 3100m | 2300m |
+| requests.memory | 2900Mi | 5000Mi | 2700Mi |
+| limits.cpu | 2700m | 6500m | 4900m |
+| limits.memory | 4200Mi | 8200Mi | 5300Mi |
+
+Prod quota is lower than staging despite having HPA enabled — no in-cluster MySQL pods (3 × 200m CPU / 600Mi each) since databases run on RDS.
+
+### Access
+
+**Dev / Staging** — internal only, not exposed to the internet. Access via VPN:
+- `dev.chess.internal` → dev namespace
+- `staging.chess.internal` → staging namespace
+
+DNS is resolved via Route53 private hosted zone (provisioned by Terraform). Both hostnames point to the nginx ingress on the shared EKS cluster. Traffic stays within the VPC.
+
+**Prod** — public via ALB + Route53 public hosted zone. TLS terminated at the ALB.
+
 ## Project Roadmap
 
 - [x] Kubernetes manifests — secrets, configmaps, statefulsets, deployments, services, ingress, network policies, resource quota, limit range
-- [ ] Helm charts — packaging manifests for reusable deployment
+- [x] Helm charts — packaging manifests for reusable deployment
 - [ ] Terraform — cloud infrastructure provisioning (cluster, DNS, storage)
 - [ ] GitHub Actions — CD pipeline for automated production deploys
 

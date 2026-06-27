@@ -1,0 +1,68 @@
+ingress:
+  host: "chess.yourdomain.com"
+  nginx:
+    enabled: false
+  alb:
+    enabled: true
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+
+resourcequota:
+  hard:
+    requests.cpu: "2300m"
+    requests.memory: "2700Mi"
+    limits.cpu: "4900m"
+    limits.memory: "5300Mi"
+
+frontend:
+  enabled: false
+
+auth:
+  hpa:
+    enabled: true
+  secret:
+    databaseUrl: ""
+    jwtSecretKey: ""
+  db:
+    enabled: false
+    hostPath:
+      enabled: false
+
+room:
+  hpa:
+    enabled: true
+  secret:
+    databaseUrl: ""
+    redisUrl: ""
+    jwtSecretKey: ""
+  db:
+    enabled: false
+    hostPath:
+      enabled: false
+
+game:
+  hpa:
+    enabled: true
+  secret:
+    databaseUrl: ""
+    redisUrl: ""
+    jwtSecretKey: ""
+  db:
+    enabled: false
+    hostPath:
+      enabled: false
+
+redis:
+  enabled: false
+
+dockerconfigjson: |
+    {
+      "auths": {
+        "ghcr.io": {
+          "username": "",
+          "password": "",
+          "auth": ""
+        }
+      }
+    }

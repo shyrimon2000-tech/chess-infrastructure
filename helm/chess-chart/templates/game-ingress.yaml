@@ -18,7 +18,10 @@ spec:
   ingressClassName: alb
   {{- end }}
   rules:
-  - http:
+  - {{- if .Values.ingress.host }}
+    host: {{ .Values.ingress.host }}
+    {{- end }}
+    http:
       paths:
       - path: /api/game/(.*)
         pathType: ImplementationSpecific
