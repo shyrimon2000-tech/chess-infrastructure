@@ -11,53 +11,67 @@ resourcequota:
 frontend:
   enabled: true
 
+secret:
+  enabled: false
+  externalSecret:
+    remoteRef:
+      key: "chess/staging/ghcr"
+
 auth:
   hpa:
     enabled: true
   secret:
-    databaseUrl: ""
-    jwtSecretKey: ""
+    enabled: false
+  externalSecret:
+    remoteRef:
+      key: "chess/staging/auth"
   db:
     storageClassName: gp3
     hostPath:
       enabled: false
+    secret:
+      enabled: false
+    externalSecret:
+      remoteRef:
+        key: "chess/staging/auth-db"
 
 room:
   hpa:
     enabled: true
   secret:
-    databaseUrl: ""
-    redisUrl: ""
-    jwtSecretKey: ""
+    enabled: false
+  externalSecret:
+    remoteRef:
+      key: "chess/staging/room"
   db:
     storageClassName: gp3
     hostPath:
       enabled: false
+    secret:
+      enabled: false
+    externalSecret:
+      remoteRef:
+        key: "chess/staging/room-db"
 
 game:
   hpa:
     enabled: true
   secret:
-    databaseUrl: ""
-    redisUrl: ""
-    jwtSecretKey: ""
+    enabled: false
+  externalSecret:
+    remoteRef:
+      key: "chess/staging/game"
   db:
     storageClassName: gp3
     hostPath:
       enabled: false
+    secret:
+      enabled: false
+    externalSecret:
+      remoteRef:
+        key: "chess/staging/game-db"
 
 redis:
   storageClassName: gp3
   hostPath:
     enabled: false
-
-dockerconfigjson: |
-    {
-      "auths": {
-        "ghcr.io": {
-          "username": "",
-          "password": "",
-          "auth": ""
-        }
-      }
-    }
