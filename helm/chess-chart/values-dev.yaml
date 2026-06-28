@@ -12,60 +12,56 @@ frontend:
   enabled: true
 
 secret:
-  enabled: false
-  externalSecret:
-    remoteRef:
-      key: "chess/dev/ghcr"
+  dockerconfigjson: |
+    {
+      "auths": {
+        "ghcr.io": {
+          "username": "",
+          "password": "",
+          "auth": ""
+        }
+      }
+    }
 
 auth:
   secret:
-    enabled: false
-  externalSecret:
-    remoteRef:
-      key: "chess/dev/auth"
+    databaseUrl: ""
+    jwtSecretKey: ""
   db:
     storageClassName: gp3
     hostPath:
       enabled: false
     secret:
-      enabled: false
-    externalSecret:
-      remoteRef:
-        key: "chess/dev/auth-db"
+      rootPassword: ""
+      password: ""
 
 room:
   replicaCount: 1
   secret:
-    enabled: false
-  externalSecret:
-    remoteRef:
-      key: "chess/dev/room"
+    databaseUrl: ""
+    redisUrl: ""
+    jwtSecretKey: ""
   db:
     storageClassName: gp3
     hostPath:
       enabled: false
     secret:
-      enabled: false
-    externalSecret:
-      remoteRef:
-        key: "chess/dev/room-db"
+      rootPassword: ""
+      password: ""
 
 game:
   replicaCount: 1
   secret:
-    enabled: false
-  externalSecret:
-    remoteRef:
-      key: "chess/dev/game"
+    databaseUrl: ""
+    redisUrl: ""
+    jwtSecretKey: ""
   db:
     storageClassName: gp3
     hostPath:
       enabled: false
     secret:
-      enabled: false
-    externalSecret:
-      remoteRef:
-        key: "chess/dev/game-db"
+      rootPassword: ""
+      password: ""
 
 redis:
   storageClassName: gp3
