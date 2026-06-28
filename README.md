@@ -78,6 +78,71 @@ DNS is resolved via Route53 private hosted zone (provisioned by Terraform). Both
 - [ ] Terraform — cloud infrastructure provisioning (cluster, DNS, storage)
 - [ ] GitHub Actions — CD pipeline for automated production deploys
 
+## Terraform
+
+Cloud infrastructure provisioned with Terraform + Terragrunt. State stored in S3 (`chess-terraform-state-221556121262`, us-east-1, versioning enabled).
+
+### Structure
+
+```
+terraform/
+├── root.hcl                        # S3 backend + AWS provider (generated per environment)
+├── modules/
+│   ├── vpc/                        # VPC module
+│   └── eks/                        # EKS cluster module
+└── environments/
+    ├── shared/                     # dev + staging (one cluster, separate namespaces)
+    │   ├── vpc/                    # 10.0.0.0/16
+    │   └── eks/                    # chess-shared cluster
+    └── prod/
+        ├── vpc/                    # 192.168.0.0/16
+        └── eks/                    # chess-prod cluster
+```
+
+### Architectural Decisions
+
+**VPC**
+- Two VPCs: `shared` (10.0.0.0/16) for dev+staging, `prod` (192.168.0.0/16) for production
+- 3 public + 3 private subnets across 3 AZs in each VPC
+- `prod` additionally has 3 database subnets for RDS
+- Single NAT gateway per VPC (cost optimization — acceptable for this project scale)
+
+**EKS**
+- Private API endpoint only (`endpoint_public_access = false`) — access via WireGuard VPN
+- Two node groups per cluster:
+  - **Infra node group** (managed): t3.medium, fixed count (prod: 2 nodes across AZs, shared: 1 node). Runs Karpenter, CoreDNS, ArgoCD, ALB Controller, Prometheus stack. Tainted `dedicated=infra:NoSchedule`
+  - **App nodes** (Karpenter): on-demand only, provisioned dynamically per pending pod demand
+- No Spot instances — auth is the entry point with 1 replica at idle, room/game handle critical Redis pub/sub without delivery guarantees
+- Addons: CoreDNS, kube-proxy, VPC CNI, EKS Pod Identity Agent, EBS CSI Driver
+
+**Node sizing rationale**
+- App pod resource budget (prod peak): 2300m CPU / 2700Mi RAM total across auth×3, room×4, game×6
+- Infra components (Karpenter, ArgoCD, Prometheus stack, ALB Controller, CoreDNS): ~1400m CPU / ~2700Mi RAM
+- t3.medium (1870m usable CPU / 3400Mi usable RAM) is sufficient for infra — Prometheus TSDB growth fits within headroom at this scale
+
+**Frontend**
+- Prod: S3 + CloudFront (static assets, no pod)
+- Dev / Staging: container in EKS (shared cluster)
+
+### Progress
+
+| Module | Status |
+|---|---|
+| S3 state bucket | done (manual) |
+| VPC (shared + prod) | written, plan verified |
+| EKS (shared + prod) | written, plan verified |
+| Karpenter | not started |
+| WireGuard (EC2) | not started |
+| RDS (prod) | not started |
+| ElastiCache / Redis (prod) | not started |
+| ALB Ingress Controller | not started |
+| Route53 / DNS | not started |
+| S3 + CloudFront (prod frontend) | not started |
+
+> VPC and EKS modules are plan-verified but not yet applied. `terragrunt apply` will be run once all modules are written.
+
+---
+
 ## Repository Structure
 
 ```
