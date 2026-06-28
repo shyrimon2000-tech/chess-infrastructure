@@ -47,6 +47,7 @@ secret:
 
 db:
   enabled: true
+  cidr: ""
   storageClassName: ""
   image: mysql:8.0
   resources:

@@ -46,8 +46,11 @@ secret:
   redisUrl: ""
   jwtSecretKey: ""
 
+redisCidr: ""
+
 db:
   enabled: true
+  cidr: ""
   storageClassName: ""
   image: mysql:8.0
   resources:

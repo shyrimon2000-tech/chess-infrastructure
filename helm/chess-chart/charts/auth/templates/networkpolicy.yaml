@@ -21,6 +21,7 @@ spec:
     - protocol: TCP
       port: 8000
   egress:
+  {{- if .Values.db.enabled }}
   - to:
     - podSelector:
         matchLabels:
@@ -28,6 +29,14 @@ spec:
     ports:
     - protocol: TCP
       port: 3306
+  {{- else }}
+  - to:
+    - ipBlock:
+        cidr: {{ .Values.db.cidr }}
+    ports:
+    - protocol: TCP
+      port: 3306
+  {{- end }}
   - to:
     - namespaceSelector:
         matchLabels:

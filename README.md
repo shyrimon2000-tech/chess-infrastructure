@@ -29,7 +29,16 @@ Each backend service runs on port `8000`. MySQL 8.0 per service (no shared datab
 | Replicas | 1 per service | minReplicas (HPA) | minReplicas (HPA) |
 | ResourceQuota | low (1 replica) | based on maxReplicas | based on maxReplicas |
 | Ingress | nginx | nginx | ALB |
-| Secrets | plain Secret | plain Secret | ESO (External Secrets) |
+| Secrets | plain Secret | plain Secret | ESO → AWS Secrets Manager |
+
+### Network Policy egress
+
+Service pods (auth, game, room) have egress rules that adapt to the environment:
+
+- **Dev / Staging** (`db.enabled: true`) — egress to database and Redis pods is restricted by `podSelector`, allowing traffic only to the specific in-cluster pods.
+- **Prod** (`db.enabled: false`) — egress uses `ipBlock` with a configurable VPC CIDR (`db.cidr` for RDS on port 3306, `redisCidr` for ElastiCache on port 6379), restricting outbound traffic to the VPC private subnets only. Default placeholder is `10.0.0.0/16` — replace with the actual subnet CIDRs once the VPC is provisioned by Terraform.
+
+This is controlled automatically via the `db.enabled` flag — no manual NetworkPolicy changes needed when switching environments.
 
 ### HPA Configuration (Staging / Prod)
 
