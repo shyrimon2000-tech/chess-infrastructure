@@ -32,7 +32,16 @@ config:
   accessTokenExpireMinutes: "30"
   refreshTokenExpireDays: "7"
 
+externalSecret:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: cluster-secret-store
+    kind: ClusterSecretStore
+  remoteRef:
+    key: ""
+
 secret:
+  enabled: true
   databaseUrl: ""
   jwtSecretKey: ""
 
@@ -47,7 +56,15 @@ db:
     limits:
       cpu: "400m"
       memory: "800Mi"
+  externalSecret:
+    refreshInterval: 1h
+    secretStoreRef:
+      name: cluster-secret-store
+      kind: ClusterSecretStore
+    remoteRef:
+      key: ""
   secret:
+    enabled: true
     rootPassword: ""
     user: chess_user
     password: ""

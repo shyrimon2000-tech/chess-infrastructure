@@ -1,13 +1,22 @@
-dockerconfigjson: |
-    {
-      "auths": {
-        "ghcr.io": {
-          "username": "<your-github-username>",
-          "password": "<your-ghcr-pat>",
-          "auth": ""
+secret:
+  enabled: true  
+  dockerconfigjson: |
+      {
+        "auths": {
+          "ghcr.io": {
+            "username": "<your-github-username>",
+            "password": "<your-ghcr-pat>",
+            "auth": ""
+          }
         }
       }
-    }
+  externalSecret:
+    refreshInterval: 1h
+    secretStoreRef:
+      name: cluster-secret-store
+      kind: ClusterSecretStore
+    remoteRef:
+      key: ""
 
 ingress:
   host: ""
