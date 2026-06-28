@@ -18,12 +18,20 @@ resourcequota:
 frontend:
   enabled: false
 
+secret:
+  enabled: false
+  externalSecret:
+    remoteRef:
+      key: "chess/prod/ghcr"
+
 auth:
   hpa:
     enabled: true
   secret:
-    databaseUrl: ""
-    jwtSecretKey: ""
+    enabled: false
+  externalSecret:
+    remoteRef:
+      key: "chess/prod/auth"
   db:
     enabled: false
     hostPath:
@@ -33,9 +41,10 @@ room:
   hpa:
     enabled: true
   secret:
-    databaseUrl: ""
-    redisUrl: ""
-    jwtSecretKey: ""
+    enabled: false
+  externalSecret:
+    remoteRef:
+      key: "chess/prod/room"
   db:
     enabled: false
     hostPath:
@@ -45,9 +54,10 @@ game:
   hpa:
     enabled: true
   secret:
-    databaseUrl: ""
-    redisUrl: ""
-    jwtSecretKey: ""
+    enabled: false
+  externalSecret:
+    remoteRef:
+      key: "chess/prod/game"
   db:
     enabled: false
     hostPath:
@@ -55,14 +65,3 @@ game:
 
 redis:
   enabled: false
-
-dockerconfigjson: |
-    {
-      "auths": {
-        "ghcr.io": {
-          "username": "",
-          "password": "",
-          "auth": ""
-        }
-      }
-    }
