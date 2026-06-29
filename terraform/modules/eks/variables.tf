@@ -15,16 +15,6 @@ variable "private_subnet_ids" {
   type = list(string)
 }
 
-variable "infra_node_instance_type" {
-  type    = string
-  default = "t3.medium"
-}
-
-variable "infra_node_count" {
-  type    = number
-  default = 2
-}
-
 variable "tags" {
   type    = map(string)
   default = {}

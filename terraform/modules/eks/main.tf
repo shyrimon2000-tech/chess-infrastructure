@@ -9,31 +9,44 @@ module "eks" {
   subnet_ids = var.private_subnet_ids
 
   addons = {
-    coredns                = {}
+    coredns                = {
+      configuration_values = jsonencode({
+        computeType = "Fargate"
+      })
+    }
     kube-proxy             = {}
     eks-pod-identity-agent = { before_compute = true }
     vpc-cni                = { before_compute = true }
     aws-ebs-csi-driver     = {}
   }
 
-  eks_managed_node_groups = {
-    infra = {
-      instance_types = [var.infra_node_instance_type]
-      min_size       = var.infra_node_count
-      max_size       = var.infra_node_count
-      desired_size   = var.infra_node_count
-
-      labels = {
-        role = "infra"
-      }
-
-      taints = {
-        dedicated = {
-          key    = "dedicated"
-          value  = "infra"
-          effect = "NO_SCHEDULE"
+  fargate_profiles = {
+    karpenter = {
+      selectors = [
+        { namespace = "karpenter" }
+      ]
+      subnet_ids = var.private_subnet_ids
+    }
+    argocd = {
+      selectors = [
+        { namespace = "argocd" }
+      ]
+      subnet_ids = var.private_subnet_ids
+    }
+    grafana = {
+      selectors = [
+        { namespace = "grafana" }
+      ]
+      subnet_ids = var.private_subnet_ids
+    }
+    kube_system = {
+      selectors = [
+        {
+          namespace = "kube-system"
+          labels    = { "k8s-app" = "kube-dns" }
         }
-      }
+      ]
+      subnet_ids = var.private_subnet_ids
     }
   }
 

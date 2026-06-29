@@ -20,5 +20,4 @@ inputs = {
   cluster_name       = "chess-shared"
   vpc_id             = dependency.vpc.outputs.vpc_id
   private_subnet_ids = dependency.vpc.outputs.private_subnet_ids
-  infra_node_count   = 1
 }
