@@ -173,6 +173,7 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 - **prod**: on-demand instances — no interruptions for active game sessions and room state (Redis)
 - Consolidation: `WhenEmptyOrUnderutilized` + 30s (shared), `WhenEmpty` + 5m (prod)
 - Node limits: 8 CPU / 32Gi per cluster (parametrized via `cpu_limit` / `memory_limit` inputs)
+- `time_sleep` (90s) on NodePool destroy — gives Karpenter time to drain and terminate EC2 nodes before Karpenter itself is uninstalled; without this, instances are orphaned and block Security Group deletion
 
 **Frontend**
 - Prod: S3 + CloudFront (static assets, no pod in cluster)
