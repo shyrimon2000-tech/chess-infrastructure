@@ -1,12 +1,15 @@
 variable "cluster_name" {
-  type = string
+  description = "EKS cluster name"
+  type        = string
 }
 
 variable "node_iam_role_name" {
-  type = string
+  description = "IAM role name for nodes provisioned by Karpenter"
+  type        = string
 }
 
 variable "simplified" {
-  type    = bool
-  default = false
+  description = "If true, forces Spot capacity type (used for shared/dev environment)"
+  type        = bool
+  default     = false
 }

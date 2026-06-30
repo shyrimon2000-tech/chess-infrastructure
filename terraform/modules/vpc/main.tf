@@ -15,4 +15,7 @@ module "vpc" {
 
   enable_dns_hostnames = true
   enable_dns_support   = true
+
+  private_subnet_tags = var.private_subnet_tags
+  public_subnet_tags  = var.public_subnet_tags
 }

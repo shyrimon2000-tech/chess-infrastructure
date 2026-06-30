@@ -20,7 +20,7 @@ All backend services run on port `8000` and expose a `/health` endpoint used by 
 - `terraform/` — cloud infrastructure provisioning via Terragrunt (VPC + EKS modules, shared/prod environments)
 
 **Planned additions:**
-- `.github/workflows/` — CD pipeline for automated production deploys
+- `.github/workflows/` — CD pipeline (3-layer architecture, see GitHub Actions section below)
 
 ## Secrets & Config Management
 
@@ -144,7 +144,7 @@ Single `general` NodePool — all chess services bin-packed on the same nodes.
 ### Networking
 
 - **EKS endpoint:** private only (`endpoint_public_access = false`)
-- **Access to cluster:** via WireGuard VPN on EC2 (planned module)
+- **Access to cluster:** GitHub Actions self-hosted runner on ECS Fargate in private subnet (see GitHub Actions section)
 - **Node access:** SSM Session Manager — no SSH, no port 22, sessions logged to CloudTrail
 - **NAT Gateway:** single NAT (known SPOF, acceptable for current stage)
 - **Security Groups:** created automatically by `terraform-aws-modules/eks/aws` — no manual SG resources needed
@@ -177,6 +177,33 @@ EBS CSI Driver required in both clusters:
 - **Dev/Staging:** MySQL 8.0 StatefulSet in-cluster, 5Gi EBS PVC per service
 - **Prod:** RDS MySQL Multi-AZ, 1-year Reserved Instance (~$40–50/mo)
 - Aurora Serverless v2 rejected for prod: more expensive under predictable steady load
+
+## GitHub Actions CD Architecture
+
+Three-layer deployment model. Each layer is independent — no circular dependencies.
+
+### Layer 0 — Bootstrap (GitHub-hosted runner)
+- **Workflow:** `bootstrap-infrastructure.yml`, trigger: `workflow_dispatch`
+- **Runner:** standard `ubuntu-latest` (GitHub-hosted, public internet)
+- **Auth:** AWS OIDC (no long-lived credentials)
+- **Does:** `terragrunt apply` for VPC + ECS runner infrastructure
+- **Why it can run here:** VPC and ECS don't require access to the EKS API
+
+### Layer 1 — Cluster provisioning (self-hosted Fargate runner)
+- **Workflow:** `deploy-cluster.yml`, trigger: `workflow_dispatch`
+- **Runner:** self-hosted, ECS Fargate task in private subnet (inside VPC)
+- **Does:** `terragrunt apply` for EKS → Karpenter → NodePools → ArgoCD bootstrap
+- **Why it needs VPC:** EKS endpoint is private — `helm` and `kubectl` providers must be in the same VPC
+
+### Layer 2 — Application delivery (ArgoCD)
+- **Trigger:** git push → ArgoCD watches repo
+- **Does:** syncs chess microservices, configs, secrets
+- **Runs on:** ArgoCD pod on Fargate (already inside the cluster)
+
+### Key decisions
+- ECS Fargate runner chosen over WireGuard VPN: runner also solves CI/CD, not just access
+- ECS runner is independent of EKS (no circular dependency)
+- ArgoCD replaces any per-service apply workflow — Terraform only provisions infrastructure
 
 ## AWS Guidance
 

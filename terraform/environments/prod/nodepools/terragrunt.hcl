@@ -10,7 +10,7 @@ dependency "eks" {
   config_path = "../eks"
 
   mock_outputs = {
-    cluster_name                       = "chess-prod"
+    cluster_name                       = "mock-cluster"
     cluster_endpoint                   = "https://mock.eks.amazonaws.com"
     cluster_certificate_authority_data = "bW9jaw=="
   }
@@ -30,15 +30,6 @@ generate "kubectl_provider" {
   path      = "kubectl_provider.tf"
   if_exists = "overwrite_terragrunt"
   contents  = <<EOF
-terraform {
-  required_providers {
-    kubectl = {
-      source  = "alekc/kubectl"
-      version = "~> 2.0"
-    }
-  }
-}
-
 provider "kubectl" {
   host                   = "${dependency.eks.outputs.cluster_endpoint}"
   cluster_ca_certificate = base64decode("${dependency.eks.outputs.cluster_certificate_authority_data}")

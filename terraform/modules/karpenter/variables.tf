@@ -1,12 +1,20 @@
 variable "cluster_name" {
-  type = string
+  description = "EKS cluster name"
+  type        = string
 }
 
 variable "cluster_endpoint" {
-  type = string
+  description = "EKS cluster API endpoint URL"
+  type        = string
 }
 
 variable "karpenter_version" {
-  type    = string
-  default = "1.3.3"
+  description = "Karpenter Helm chart version"
+  type        = string
+  default     = "1.3.3"
+}
+
+variable "oidc_provider_arn" {
+  description = "ARN of the OIDC provider for IRSA"
+  type        = string
 }

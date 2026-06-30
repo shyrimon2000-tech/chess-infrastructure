@@ -1,21 +1,26 @@
 variable "cluster_name" {
-  type = string
+  description = "EKS cluster name"
+  type        = string
 }
 
 variable "cluster_version" {
-  type    = string
-  default = "1.31"
+  description = "Kubernetes version for the EKS cluster"
+  type        = string
+  default     = "1.31"
 }
 
 variable "vpc_id" {
-  type = string
+  description = "ID of the VPC where the cluster is deployed"
+  type        = string
 }
 
 variable "private_subnet_ids" {
-  type = list(string)
+  description = "IDs of private subnets for EKS nodes and Fargate profiles"
+  type        = list(string)
 }
 
 variable "tags" {
-  type    = map(string)
-  default = {}
+  description = "Additional tags to apply to all cluster resources"
+  type        = map(string)
+  default     = {}
 }
