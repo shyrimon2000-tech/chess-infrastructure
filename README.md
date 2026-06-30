@@ -63,11 +63,16 @@ Prod quota is lower than staging despite having HPA enabled — no in-cluster My
 
 ### Access
 
-**Dev / Staging** — internal only, not exposed to the internet. Access via VPN:
+**Dev / Staging** — internal only, not exposed to the internet.
+
+- **CI/CD access** — self-hosted ECS Fargate runner in private subnet (runs `terragrunt apply`, `helm`, `kubectl`)
+- **Admin/developer access** — WireGuard VPN into the VPC (Terraform module planned); once connected, all private resources are reachable directly
+
+Planned hostnames (Route53 private hosted zone, not yet provisioned):
 - `dev.chess.internal` → dev namespace
 - `staging.chess.internal` → staging namespace
 
-DNS is resolved via Route53 private hosted zone (provisioned by Terraform). Both hostnames point to the nginx ingress on the shared EKS cluster. Traffic stays within the VPC.
+Both point to the nginx ingress on the shared EKS cluster. Traffic stays within the VPC.
 
 **Prod** — public via ALB + Route53 public hosted zone. TLS terminated at the ALB.
 
@@ -75,8 +80,8 @@ DNS is resolved via Route53 private hosted zone (provisioned by Terraform). Both
 
 - [x] Kubernetes manifests — secrets, configmaps, statefulsets, deployments, services, ingress, network policies, resource quota, limit range
 - [x] Helm charts — packaging manifests for reusable deployment
-- [ ] Terraform — cloud infrastructure provisioning (cluster, DNS, storage)
-- [ ] GitHub Actions — CD pipeline for automated production deploys
+- [x] Terraform — cloud infrastructure provisioning (VPC, EKS, Karpenter, NodePools, ECS runner)
+- [ ] GitHub Actions — CD pipeline (3-layer architecture, ECS runner written)
 
 ## Terraform
 
@@ -91,21 +96,26 @@ terraform/
 │   ├── vpc/                        # VPC module
 │   ├── eks/                        # EKS cluster + Fargate profiles
 │   ├── karpenter/                  # Karpenter IAM + SQS + Helm chart
-│   └── nodepools/                  # EC2NodeClass + NodePool CRDs
+│   ├── nodepools/                  # EC2NodeClass + NodePool CRDs
+│   └── ecs-runner/                 # Self-hosted GitHub Actions runner on ECS Fargate
 └── environments/
     ├── shared/                     # dev + staging (one cluster, separate namespaces)
     │   ├── vpc/                    # 10.0.0.0/16
     │   ├── eks/                    # chess-shared cluster
     │   ├── karpenter/              # Karpenter on Fargate
-    │   └── nodepools/              # Spot instances
+    │   ├── nodepools/              # Spot instances
+    │   └── ecs-runner/             # Fargate runner in shared VPC
     └── prod/
         ├── vpc/                    # 192.168.0.0/16
         ├── eks/                    # chess-prod cluster
         ├── karpenter/              # Karpenter on Fargate
-        └── nodepools/              # on-demand instances
+        ├── nodepools/              # on-demand instances
+        └── ecs-runner/             # Fargate runner in prod VPC
 ```
 
-Apply order: `vpc → eks → karpenter → nodepools`
+Apply order (Layer 0 — GitHub-hosted runner): `vpc → ecs-runner`
+
+Apply order (Layer 1 — self-hosted Fargate runner): `eks → karpenter → nodepools`
 
 ### Architectural Decisions
 
@@ -124,9 +134,9 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 | Fargate | Karpenter controller, ArgoCD, Grafana, CoreDNS | Fargate micro-VM per pod |
 | EC2 (Karpenter) | All chess microservices, Prometheus | Spot (shared) / on-demand (prod) |
 
-- Private API endpoint only (`endpoint_public_access = false`) — access via WireGuard VPN
-- Pod Identity used for IAM (not IRSA)
-- Addons: CoreDNS (Fargate), kube-proxy, VPC CNI, EKS Pod Identity Agent, EBS CSI Driver
+- Private API endpoint only (`endpoint_public_access = false`) — access via self-hosted ECS Fargate runner in private subnet
+- IRSA used for Karpenter IAM (pod identity not used — EKS pod identity agent not available on Fargate at time of writing)
+- Addons: CoreDNS (Fargate), kube-proxy, VPC CNI, EBS CSI Driver
 - CoreDNS runs on Fargate via `kube-system` Fargate profile (label: `k8s-app=kube-dns`) to bootstrap DNS before Karpenter provisions EC2 nodes
 
 **Karpenter**
@@ -146,18 +156,32 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 | Module | Status |
 |---|---|
 | S3 state bucket | done (manual) |
-| VPC (shared + prod) | written, plan verified |
+| VPC (shared + prod) | written, validate ✓ |
 | EKS (shared + prod) | written, plan verified |
-| Karpenter (shared + prod) | written |
-| NodePools (shared + prod) | written |
-| WireGuard (EC2) | not started |
+| Karpenter (shared + prod) | written, validate ✓ |
+| NodePools (shared + prod) | written, validate ✓ |
+| ECS runner (shared + prod) | written, validate ✓ |
 | RDS (prod) | not started |
 | ElastiCache / Redis (prod) | not started |
 | ALB Ingress Controller | not started |
 | Route53 / DNS | not started |
 | S3 + CloudFront (prod frontend) | not started |
 
-> Modules are written but not yet applied. `terragrunt apply` will be run once all modules are complete.
+> Modules are written but not yet applied. `terragrunt apply` will be run via GitHub Actions workflows once the CD pipeline is in place.
+
+## GitHub Actions CD
+
+Three-layer deployment model. Each layer is independent — no circular dependencies.
+
+| Layer | Workflow | Runner | Does |
+|---|---|---|---|
+| 0 — Bootstrap | `bootstrap-infrastructure.yml` | GitHub-hosted (`ubuntu-latest`) | `terragrunt apply` for VPC + ECS runner |
+| 1 — Cluster | `deploy-cluster.yml` | Self-hosted ECS Fargate (private subnet) | `terragrunt apply` for EKS → Karpenter → NodePools |
+| 2 — App delivery | ArgoCD (git push trigger) | ArgoCD pod on Fargate | Syncs chess microservices |
+
+Layer 0 uses a standard GitHub-hosted runner because VPC and ECS runner do not require access to the EKS private API. Once the ECS runner is provisioned, Layer 1 runs inside the VPC where the private EKS endpoint is reachable.
+
+Auth: AWS OIDC — no long-lived credentials stored in GitHub secrets.
 
 ---
 
@@ -235,7 +259,7 @@ Enables `kubectl top pods` and `kubectl top nodes` for real-time resource consum
 The script patches metrics-server with `--kubelet-insecure-tls` to handle self-signed kubelet certificates common in kubeadm clusters.
 
 
-## External Access via VPN + Caddy
+### External Access via VPN + Caddy
 
 After the local cluster is running, external HTTPS access was set up without a cloud load balancer:
 

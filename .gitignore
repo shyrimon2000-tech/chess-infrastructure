@@ -5,8 +5,7 @@ k8s/configmaps/
 docker-compose.yml
 nginx.dev.conf
 tests/
-
-# Terraform / Terragrunt
+.claude/
 .terraform/
 .terragrunt-cache/
 *.tfstate
