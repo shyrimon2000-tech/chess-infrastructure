@@ -36,6 +36,12 @@ resource "kubectl_manifest" "nodepool" {
   depends_on = [kubectl_manifest.ec2_node_class]
 }
 
+resource "time_sleep" "wait_for_node_termination" {
+  depends_on = [kubectl_manifest.nodepool]
+
+  destroy_duration = "90s"
+}
+
 resource "kubectl_manifest" "ec2_node_class" {
   yaml_body = <<-YAML
     apiVersion: karpenter.k8s.aws/v1
