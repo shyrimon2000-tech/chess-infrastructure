@@ -8,8 +8,30 @@ variable "node_iam_role_name" {
   type        = string
 }
 
-variable "simplified" {
-  description = "If true, forces Spot capacity type (used for shared/dev environment)"
+variable "consolidation_policy" {
+  description = "Karpenter consolidation policy (WhenEmpty for prod, WhenEmptyOrUnderutilized for shared)"
+  type        = string
+}
+
+variable "consolidate_after" {
+  description = "How long a node must be underutilized before consolidation (e.g. 30s for shared, 5m for prod)"
+  type        = string
+}
+
+variable "use_spot" {
+  description = "If true, uses Spot instances (shared/dev). If false, uses on-demand (prod)."
   type        = bool
   default     = false
+}
+
+variable "cpu_limit" {
+  description = "Maximum total CPU Karpenter can provision across all nodes (e.g. \"8\")"
+  type        = string
+  default     = "8"
+}
+
+variable "memory_limit" {
+  description = "Maximum total memory Karpenter can provision across all nodes (e.g. \"32Gi\")"
+  type        = string
+  default     = "32Gi"
 }

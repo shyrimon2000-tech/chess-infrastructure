@@ -87,6 +87,23 @@ Both point to the nginx ingress on the shared EKS cluster. Traffic stays within 
 
 Cloud infrastructure provisioned with Terraform + Terragrunt. State stored in S3 (`chess-terraform-state-221556121262`, us-east-1, versioning enabled).
 
+### Bootstrap (one-time, per AWS account)
+
+These resources must exist before the first `terragrunt apply`. They store Terraform state and locks — they cannot be managed by Terraform itself (chicken-and-egg).
+
+```bash
+# S3 bucket for state (versioning enabled, encryption at rest)
+aws s3api create-bucket \
+  --bucket chess-terraform-state-221556121262 \
+  --region us-east-1
+
+aws s3api put-bucket-versioning \
+  --bucket chess-terraform-state-221556121262 \
+  --versioning-configuration Status=Enabled
+```
+
+State locking uses native S3 conditional writes (`use_lockfile = true` in `terraform/root.hcl`) — no DynamoDB table required. Requires Terraform ≥ 1.10.
+
 ### Structure
 
 ```

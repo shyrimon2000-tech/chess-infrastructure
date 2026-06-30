@@ -15,7 +15,7 @@ dependency "eks" {
     cluster_certificate_authority_data = "bW9jaw=="
     oidc_provider_arn                  = "arn:aws:iam::123456789012:oidc-provider/mock"
   }
-  mock_outputs_allowed_terraform_commands = ["plan", "validate"]
+  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init"]
 }
 
 generate "helm_provider" {

@@ -15,9 +15,24 @@ module "eks" {
       })
     }
     kube-proxy             = {}
-    eks-pod-identity-agent = { before_compute = true }
-    vpc-cni                = { before_compute = true }
-    aws-ebs-csi-driver     = {}
+    vpc-cni                = {
+      before_compute = true
+      configuration_values = jsonencode({
+        nodeSelector = {
+          "eks.amazonaws.com/compute-type" = "ec2"
+        }
+      })
+    }
+    aws-ebs-csi-driver     = {
+      service_account_role_arn = module.irsa_ebs_csi.arn
+      configuration_values     = jsonencode({
+        controller = { affinity = {} }
+      })
+    }
+  }
+
+  node_security_group_tags = {
+    "karpenter.sh/discovery" = var.cluster_name
   }
 
   fargate_profiles = {
@@ -50,10 +65,25 @@ module "eks" {
     }
   }
 
-  endpoint_public_access  = false
+  endpoint_public_access  = true  # temporary: remove after ECS runner is ready
   endpoint_private_access = true
 
   enable_cluster_creator_admin_permissions = true
 
   tags = var.tags
+}
+
+module "irsa_ebs_csi" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts"
+  version = "~> 6.0"
+
+  name                  = "${var.cluster_name}-ebs-csi-driver"
+  attach_ebs_csi_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:ebs-csi-controller-sa"]
+    }
+  }
 }

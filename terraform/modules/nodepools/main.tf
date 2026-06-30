@@ -14,7 +14,7 @@ resource "kubectl_manifest" "nodepool" {
           requirements:
             - key: karpenter.sh/capacity-type
               operator: In
-              values: ${var.simplified ? jsonencode(["spot"]) : jsonencode(["on-demand"])}
+              values: ${var.use_spot ? jsonencode(["spot"]) : jsonencode(["on-demand"])}
             - key: node.kubernetes.io/instance-type
               operator: In
               values:
@@ -23,11 +23,14 @@ resource "kubectl_manifest" "nodepool" {
                 - t3a.medium
                 - t3a.large
       disruption:
-        consolidationPolicy: WhenEmptyOrUnderutilized
-        consolidateAfter: 30s
+        consolidationPolicy: ${var.consolidation_policy}
+        consolidateAfter: ${var.consolidate_after}
+        expireAfter: 720h
+        budgets:
+          - nodes: "1"
       limits:
-        cpu: "8"
-        memory: 32Gi
+        cpu: "${var.cpu_limit}"
+        memory: ${var.memory_limit}
   YAML
 
   depends_on = [kubectl_manifest.ec2_node_class]
@@ -46,9 +49,9 @@ resource "kubectl_manifest" "ec2_node_class" {
       role: ${var.node_iam_role_name}
       subnetSelectorTerms:
         - tags:
-            kubernetes.io/cluster/${var.cluster_name}: shared
+            kubernetes.io/role/internal-elb: "1"
       securityGroupSelectorTerms:
         - tags:
-            kubernetes.io/cluster/${var.cluster_name}: owned
+            karpenter.sh/discovery: ${var.cluster_name}
   YAML
 }

@@ -16,6 +16,11 @@ module "vpc" {
   enable_dns_hostnames = true
   enable_dns_support   = true
 
-  private_subnet_tags = var.private_subnet_tags
-  public_subnet_tags  = var.public_subnet_tags
+  private_subnet_tags = merge(var.private_subnet_tags, {
+    "kubernetes.io/cluster/${var.name}" = "shared"
+  })
+
+  public_subnet_tags = merge(var.public_subnet_tags, {
+    "kubernetes.io/cluster/${var.name}" = "shared"
+  })
 }

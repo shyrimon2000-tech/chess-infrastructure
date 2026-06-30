@@ -16,12 +16,10 @@ inputs = {
   database_subnets = ["192.168.20.0/24", "192.168.21.0/24", "192.168.22.0/24"]
 
   private_subnet_tags = {
-    "kubernetes.io/role/internal-elb"  = "1"
-    "kubernetes.io/cluster/chess-prod" = "shared"
+    "kubernetes.io/role/internal-elb" = "1"
   }
 
   public_subnet_tags = {
-    "kubernetes.io/role/elb"           = "1"
-    "kubernetes.io/cluster/chess-prod" = "shared"
+    "kubernetes.io/role/elb" = "1"
   }
 }

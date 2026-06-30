@@ -14,7 +14,7 @@ dependency "eks" {
     cluster_endpoint                   = "https://mock.eks.amazonaws.com"
     cluster_certificate_authority_data = "bW9jaw=="
   }
-  mock_outputs_allowed_terraform_commands = ["plan", "validate"]
+  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init"]
 }
 
 dependency "karpenter" {
@@ -23,7 +23,7 @@ dependency "karpenter" {
   mock_outputs = {
     node_iam_role_name = "mock-node-role"
   }
-  mock_outputs_allowed_terraform_commands = ["plan", "validate"]
+  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init"]
 }
 
 generate "kubectl_provider" {
@@ -43,7 +43,11 @@ EOF
 }
 
 inputs = {
-  cluster_name       = dependency.eks.outputs.cluster_name
-  node_iam_role_name = dependency.karpenter.outputs.node_iam_role_name
-  simplified         = true
+  cluster_name        = dependency.eks.outputs.cluster_name
+  node_iam_role_name  = dependency.karpenter.outputs.node_iam_role_name
+  use_spot             = true
+  consolidation_policy = "WhenEmptyOrUnderutilized"
+  consolidate_after    = "30s"
+  cpu_limit            = "8"
+  memory_limit         = "32Gi"
 }
