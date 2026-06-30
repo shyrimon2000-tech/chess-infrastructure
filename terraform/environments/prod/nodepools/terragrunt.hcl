@@ -14,7 +14,7 @@ dependency "eks" {
     cluster_endpoint                   = "https://mock.eks.amazonaws.com"
     cluster_certificate_authority_data = "bW9jaw=="
   }
-  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init"]
+  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy"]
 }
 
 dependency "karpenter" {
@@ -23,7 +23,7 @@ dependency "karpenter" {
   mock_outputs = {
     node_iam_role_name = "mock-node-role"
   }
-  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init"]
+  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy"]
 }
 
 generate "kubectl_provider" {
