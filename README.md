@@ -174,6 +174,8 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 - Consolidation: `WhenEmptyOrUnderutilized` + 30s (shared), `WhenEmpty` + 5m (prod)
 - Node limits: 8 CPU / 32Gi per cluster (parametrized via `cpu_limit` / `memory_limit` inputs)
 - `time_sleep` (90s) on NodePool destroy — gives Karpenter time to drain and terminate EC2 nodes before Karpenter itself is uninstalled; without this, instances are orphaned and block Security Group deletion
+  - Karpenter's NodeClaim/Node objects do carry a finalizer that blocks deletion until the instance is actually terminated, and `kubectl_manifest` (provider `alekc/kubectl`) waits on that finalizer rather than firing-and-forgetting — but the exact wait timeout wasn't verifiable from provider source, so it isn't a guaranteed substitute for the sleep
+  - `time_sleep` is a fixed guess, not a real wait condition — acceptable for a pet project, but in production this should be a `null_resource` + `local-exec` (`when = destroy`) polling `aws ec2 describe-instances` for the actual termination state instead of trusting a duration
 
 **Frontend**
 - Prod: S3 + CloudFront (static assets, no pod in cluster)
