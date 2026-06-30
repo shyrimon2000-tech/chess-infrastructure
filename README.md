@@ -104,6 +104,14 @@ aws s3api put-bucket-versioning \
 
 State locking uses native S3 conditional writes (`use_lockfile = true` in `terraform/root.hcl`) — no DynamoDB table required. Requires Terraform ≥ 1.10.
 
+**One-time: EC2 Spot Service-Linked Role** (needed by Karpenter to launch Spot instances — one per AWS account):
+
+```bash
+aws iam create-service-linked-role --aws-service-name spot.amazonaws.com
+```
+
+Skip if the role already exists — the command returns an error but that is harmless.
+
 ### Structure
 
 ```
@@ -151,18 +159,20 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 | Fargate | Karpenter controller, ArgoCD, Grafana, CoreDNS | Fargate micro-VM per pod |
 | EC2 (Karpenter) | All chess microservices, Prometheus | Spot (shared) / on-demand (prod) |
 
-- Private API endpoint only (`endpoint_public_access = false`) — access via self-hosted ECS Fargate runner in private subnet
-- IRSA used for Karpenter IAM (pod identity not used — EKS pod identity agent not available on Fargate at time of writing)
+- API endpoint: currently `endpoint_public_access = true` (temporary, for initial provisioning). Will be set to private-only once the ECS runner is in place.
+- IRSA used for Karpenter and EBS CSI Driver (pod identity agent not available on Fargate at time of writing)
 - Addons: CoreDNS (Fargate), kube-proxy, VPC CNI, EBS CSI Driver
-- CoreDNS runs on Fargate via `kube-system` Fargate profile (label: `k8s-app=kube-dns`) to bootstrap DNS before Karpenter provisions EC2 nodes
+  - CoreDNS runs on Fargate via `kube-system` Fargate profile (label: `k8s-app=kube-dns`) — bootstraps DNS before Karpenter provisions EC2 nodes
+  - EBS CSI Driver: IRSA role with `AmazonEBSCSIDriverPolicy`; controller anti-affinity disabled so both replicas bin-pack on one node
+  - VPC CNI (`aws-node`): `nodeSelector: eks.amazonaws.com/compute-type=ec2` — prevents DaemonSet pods from going Pending on Fargate virtual nodes
 
 **Karpenter**
 - Single `general` NodePool — all chess services bin-packed on the same nodes
 - Instance types: t3/t3a medium+large (x86, amd64 only)
 - **shared**: Spot instances — cost optimized, interruptions acceptable in dev/staging
 - **prod**: on-demand instances — no interruptions for active game sessions and room state (Redis)
-- Consolidation: `WhenEmptyOrUnderutilized`, consolidateAfter 30s
-- Node limits: 8 CPU / 32Gi memory
+- Consolidation: `WhenEmptyOrUnderutilized` + 30s (shared), `WhenEmpty` + 5m (prod)
+- Node limits: 8 CPU / 32Gi per cluster (parametrized via `cpu_limit` / `memory_limit` inputs)
 
 **Frontend**
 - Prod: S3 + CloudFront (static assets, no pod in cluster)
@@ -173,18 +183,18 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 | Module | Status |
 |---|---|
 | S3 state bucket | done (manual) |
-| VPC (shared + prod) | written, validate ✓ |
-| EKS (shared + prod) | written, plan verified |
-| Karpenter (shared + prod) | written, validate ✓ |
-| NodePools (shared + prod) | written, validate ✓ |
-| ECS runner (shared + prod) | written, validate ✓ |
+| VPC (shared + prod) | applied ✓ |
+| EKS (shared + prod) | applied ✓, smoke-tested on shared |
+| Karpenter (shared + prod) | applied ✓, smoke-tested on shared |
+| NodePools (shared + prod) | applied ✓, smoke-tested on shared |
+| ECS runner (shared + prod) | written, not yet applied |
 | RDS (prod) | not started |
 | ElastiCache / Redis (prod) | not started |
 | ALB Ingress Controller | not started |
 | Route53 / DNS | not started |
 | S3 + CloudFront (prod frontend) | not started |
 
-> Modules are written but not yet applied. `terragrunt apply` will be run via GitHub Actions workflows once the CD pipeline is in place.
+> Shared environment was applied and smoke-tested, then torn down. Prod environment not yet applied. Full apply will run via GitHub Actions CD once the pipeline is wired up.
 
 ## GitHub Actions CD
 
