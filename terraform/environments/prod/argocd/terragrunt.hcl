@@ -57,7 +57,7 @@ inputs = {
   environments = [
     {
       name            = "prod"
-      namespace       = "default"
+      namespace       = "production"
       values_file     = "values-prod.yaml"
       target_revision = "main"
       automated       = false

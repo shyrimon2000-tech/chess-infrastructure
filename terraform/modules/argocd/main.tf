@@ -51,19 +51,49 @@ resource "helm_release" "argocd" {
         # tunnel + private VPC network, so dropping TLS here is fine for this project.
         name  = "server.insecure"
         value = "true"
+      },
+      {
+        # Without this, ingress-nginx assumes an HTTPS-capable backend and the
+        # proxy_pass to argocd-server's plain-HTTP port breaks (empty/garbled
+        # response, sometimes surfaced as a redirect loop).
+        name  = "server.ingress.annotations.nginx\\.ingress\\.kubernetes\\.io/backend-protocol"
+        value = "HTTP"
+      },
+      {
+        # ingress-nginx forces an HTTP->HTTPS redirect by default even when no
+        # TLS is configured on the Ingress. There's no cert for this host (TLS
+        # intentionally dropped, see server.insecure above) — left at the
+        # default, the client gets redirected to https://, nginx serves its
+        # self-signed fake cert there, and argocd-server (behind on plain
+        # HTTP, believing every request is already HTTPS) redirects right
+        # back — ERR_TOO_MANY_REDIRECTS.
+        name  = "server.ingress.annotations.nginx\\.ingress\\.kubernetes\\.io/ssl-redirect"
+        value = "false"
       }
     ] : []
   )
 }
 
-resource "kubectl_manifest" "chess_chart_applicationset" {
+locals {
+  # Split by sync mode instead of a Go-template {{if}} inside the YAML: a bare,
+  # unquoted `{{- if .automated }}` spanning multiple keys isn't valid standalone
+  # YAML (kubectl_manifest parses yaml_body client-side before ArgoCD ever sees
+  # it, and strict YAML forbids a plain scalar starting with `{`). automated is
+  # already known at terraform-apply-time (var.environments is static), so the
+  # split happens here instead of at ArgoCD's runtime templating.
+  automated_environments = [for env in var.environments : env if env.automated]
+  manual_environments    = [for env in var.environments : env if !env.automated]
+}
+
+resource "kubectl_manifest" "chess_chart_applicationset_automated" {
+  count      = length(local.automated_environments) > 0 ? 1 : 0
   depends_on = [helm_release.argocd]
 
   yaml_body = <<-YAML
     apiVersion: argoproj.io/v1alpha1
     kind: ApplicationSet
     metadata:
-      name: chess-chart
+      name: chess-chart-automated
       namespace: argocd
     spec:
       goTemplate: true
@@ -71,15 +101,12 @@ resource "kubectl_manifest" "chess_chart_applicationset" {
       generators:
         - list:
             elements:
-    %{for env in var.environments~}
-              - env: ${env.name}
-                namespace: ${env.namespace}
-                valuesFile: ${env.values_file}
-                targetRevision: ${env.target_revision}
-                automated: ${env.automated}
-                prune: ${env.prune}
-                selfHeal: ${env.self_heal}
-    %{endfor~}
+    %{~for env in local.automated_environments~}
+            - env: ${env.name}
+              namespace: ${env.namespace}
+              valuesFile: ${env.values_file}
+              targetRevision: ${env.target_revision}
+    %{~endfor~}
       template:
         metadata:
           name: 'chess-chart-{{.env}}'
@@ -96,11 +123,64 @@ resource "kubectl_manifest" "chess_chart_applicationset" {
             server: https://kubernetes.default.svc
             namespace: '{{.namespace}}'
           syncPolicy:
-            {{- if .automated }}
+            # Literal booleans, not `{{ .prune }}` — the ApplicationSet CRD types
+            # this field strictly as boolean, and a Go-template placeholder is
+            # necessarily a string until ArgoCD renders it, which happens *after*
+            # kube-apiserver already rejected the raw object for the type
+            # mismatch. Quoting doesn't help (valid YAML, still a string) and
+            # there's no way to make an unrendered placeholder satisfy a strict
+            # boolean schema. Since these are already known at terraform-apply
+            # time, hardcode them here instead of templating at ArgoCD's
+            # runtime — every environment in this ApplicationSet shares the same
+            # values (only "dev" is automated right now; if a second automated
+            # environment ever needs a *different* prune/selfHeal, it needs its
+            # own ApplicationSet, same pattern as the automated/manual split).
             automated:
-              prune: {{ .prune }}
-              selfHeal: {{ .selfHeal }}
-            {{- end }}
+              prune: ${local.automated_environments[0].prune}
+              selfHeal: ${local.automated_environments[0].self_heal}
+            syncOptions:
+              - CreateNamespace=true
+  YAML
+}
+
+resource "kubectl_manifest" "chess_chart_applicationset_manual" {
+  count      = length(local.manual_environments) > 0 ? 1 : 0
+  depends_on = [helm_release.argocd]
+
+  yaml_body = <<-YAML
+    apiVersion: argoproj.io/v1alpha1
+    kind: ApplicationSet
+    metadata:
+      name: chess-chart-manual
+      namespace: argocd
+    spec:
+      goTemplate: true
+      goTemplateOptions: ["missingkey=error"]
+      generators:
+        - list:
+            elements:
+    %{~for env in local.manual_environments~}
+            - env: ${env.name}
+              namespace: ${env.namespace}
+              valuesFile: ${env.values_file}
+              targetRevision: ${env.target_revision}
+    %{~endfor~}
+      template:
+        metadata:
+          name: 'chess-chart-{{.env}}'
+        spec:
+          project: default
+          source:
+            repoURL: ${var.repo_url}
+            targetRevision: '{{.targetRevision}}'
+            path: helm/chess-chart
+            helm:
+              valueFiles:
+                - '{{.valuesFile}}'
+          destination:
+            server: https://kubernetes.default.svc
+            namespace: '{{.namespace}}'
+          syncPolicy:
             syncOptions:
               - CreateNamespace=true
   YAML

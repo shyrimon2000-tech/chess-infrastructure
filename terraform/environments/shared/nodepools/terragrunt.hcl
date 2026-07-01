@@ -13,6 +13,7 @@ dependency "eks" {
     cluster_name                       = "mock-cluster"
     cluster_endpoint                   = "https://mock.eks.amazonaws.com"
     cluster_certificate_authority_data = "bW9jaw=="
+    oidc_provider_arn                  = "arn:aws:iam::123456789012:oidc-provider/mock"
   }
   mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy"]
 }
@@ -43,8 +44,9 @@ EOF
 }
 
 inputs = {
-  cluster_name        = dependency.eks.outputs.cluster_name
-  node_iam_role_name  = dependency.karpenter.outputs.node_iam_role_name
+  cluster_name         = dependency.eks.outputs.cluster_name
+  node_iam_role_name   = dependency.karpenter.outputs.node_iam_role_name
+  oidc_provider_arn    = dependency.eks.outputs.oidc_provider_arn
   use_spot             = true
   consolidation_policy = "WhenEmptyOrUnderutilized"
   consolidate_after    = "30s"

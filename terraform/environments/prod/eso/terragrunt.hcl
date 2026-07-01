@@ -3,7 +3,7 @@ include "root" {
 }
 
 terraform {
-  source = "../../../modules/argocd"
+  source = "../../../modules/eso"
 }
 
 dependency "eks" {
@@ -13,22 +13,25 @@ dependency "eks" {
     cluster_name                       = "mock-cluster"
     cluster_endpoint                   = "https://mock.eks.amazonaws.com"
     cluster_certificate_authority_data = "bW9jaw=="
+    oidc_provider_arn                  = "arn:aws:iam::123456789012:oidc-provider/mock"
   }
   mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy"]
 }
 
-# Ordering-only dependency — argocd's own Ingress resource is validated by
-# ingress-nginx's admission webhook. Without this, both units can apply in
-# parallel and argocd's helm_release fails with "no endpoints available for
-# service ingress-nginx-controller-admission" if it races ahead. Its output
-# isn't consumed here; the block itself is what enforces the apply order.
-dependency "ingress_nginx" {
-  config_path = "../ingress-nginx"
+# Ordering-only dependency — see shared/eso/terragrunt.hcl for why: the ESO
+# controller pod needs a real EC2 node (no Fargate profile covers its
+# namespace), so it must apply after nodepools gives Karpenter something to
+# provision from.
+dependency "nodepools" {
+  config_path = "../nodepools"
 
-  mock_outputs = {
-    load_balancer_hostname = "mock-nlb-1234567890.elb.us-east-1.amazonaws.com"
-  }
-  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy"]
+  # "apply" included too, unlike other dependency blocks in this repo — nodepools
+  # has no real outputs at all (empty outputs.tf), so there's never a "real" value
+  # to resolve even after a successful apply. Safe here specifically because this
+  # dependency exists only for ordering and no input ever reads
+  # dependency.nodepools.outputs.*.
+  mock_outputs                            = {}
+  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy", "apply"]
 }
 
 generate "helm_provider" {
@@ -66,28 +69,6 @@ EOF
 }
 
 inputs = {
-  name = "chess-shared"
-
-  environments = [
-    {
-      name            = "dev"
-      namespace       = "dev"
-      values_file     = "values-dev.yaml"
-      target_revision = "dev"
-      automated       = true
-      prune           = true
-      self_heal       = false
-    },
-    {
-      name            = "staging"
-      namespace       = "staging"
-      values_file     = "values-staging.yaml"
-      target_revision = "dev"
-      automated       = false
-      prune           = false
-      self_heal       = false
-    }
-  ]
-
-  ingress_enabled = true
+  name              = "chess-prod"
+  oidc_provider_arn = dependency.eks.outputs.oidc_provider_arn
 }

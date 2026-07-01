@@ -42,7 +42,7 @@ resource "aws_iam_instance_profile" "vpn" {
 
 resource "aws_security_group" "vpn" {
   name        = "${var.name}-vpn"
-  description = "WireGuard VPN server — UDP 51820 + HTTPS/HTTP for wg-easy panel, no SSH"
+  description = "WireGuard VPN server - UDP 51820 + HTTPS/HTTP for wg-easy panel, no SSH"
   vpc_id      = var.vpc_id
 
   ingress {
@@ -94,7 +94,14 @@ resource "aws_instance" "vpn" {
     wg_host        = local.vpn_hostname
     wg_default_dns = cidrhost(var.vpc_cidr, 2)
     wg_allowed_ips = var.vpc_cidr
-    password_hash  = data.aws_ssm_parameter.wg_easy_password_hash.value
+    # docker-compose.yml is parsed by docker-compose's own $VAR interpolation
+    # engine at `docker-compose up` time (independent of the bash heredoc that
+    # writes the file) — every literal $ in the bcrypt hash (always at least
+    # three: $2a$10$...) gets treated as a variable reference and silently
+    # dropped/mangled unless escaped as $$. Login then fails with a password
+    # that "looks right" because the *real* hash never made it into the
+    # container's env — the file on disk has a corrupted one.
+    password_hash = replace(data.aws_ssm_parameter.wg_easy_password_hash.value, "$", "$$")
   })
 
   tags = {
