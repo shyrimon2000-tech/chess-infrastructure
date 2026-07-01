@@ -54,6 +54,12 @@ module "eks" {
       ]
       subnet_ids = var.private_subnet_ids
     }
+    ingress_nginx = {
+      selectors = [
+        { namespace = "ingress-nginx" }
+      ]
+      subnet_ids = var.private_subnet_ids
+    }
     kube_system = {
       selectors = [
         {
