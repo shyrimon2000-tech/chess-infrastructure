@@ -29,7 +29,7 @@ Each backend service runs on port `8000`. MySQL 8.0 per service (no shared datab
 | Replicas | 1 per service | minReplicas (HPA) | minReplicas (HPA) |
 | ResourceQuota | low (1 replica) | based on maxReplicas | based on maxReplicas |
 | Ingress | nginx | nginx | ALB |
-| Secrets | plain Secret | plain Secret | ESO → AWS Secrets Manager |
+| Secrets | ESO → SSM (`/chess-shared/*`, shared with staging) | ESO → SSM (`/chess-shared/*`, shared with dev) | ESO → SSM (`/chess-prod/*`) |
 
 ### Network Policy egress
 

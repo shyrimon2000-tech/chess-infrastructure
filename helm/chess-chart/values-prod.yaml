@@ -22,7 +22,7 @@ secret:
   enabled: false
   externalSecret:
     remoteRef:
-      key: "chess/prod/ghcr"
+      key: "/chess-prod/ghcr"
 
 auth:
   hpa:
@@ -31,7 +31,7 @@ auth:
     enabled: false
   externalSecret:
     remoteRef:
-      key: "chess/prod/auth"
+      key: "/chess-prod/auth"
   db:
     enabled: false
     hostPath:
@@ -45,7 +45,7 @@ room:
     enabled: false
   externalSecret:
     remoteRef:
-      key: "chess/prod/room"
+      key: "/chess-prod/room"
   redisCidr: "10.0.0.0/16"
   db:
     enabled: false
@@ -60,7 +60,7 @@ game:
     enabled: false
   externalSecret:
     remoteRef:
-      key: "chess/prod/game"
+      key: "/chess-prod/game"
   redisCidr: "10.0.0.0/16"
   db:
     enabled: false
