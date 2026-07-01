@@ -24,3 +24,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "admin_principal_arn" {
+  description = "IAM principal ARN to grant personal cluster-admin access via an EKS access entry — needed once applies stop running as this identity (e.g. once CI takes over and enable_cluster_creator_admin_permissions no longer covers you)"
+  type        = string
+  default     = ""
+}

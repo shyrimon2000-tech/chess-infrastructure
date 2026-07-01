@@ -1,3 +1,13 @@
+locals {
+  admin_password_ssm_path = "/${var.name}/argocd/admin-password-hash"
+}
+
+# Created manually, same as wg-easy's — Terraform only reads it.
+data "aws_ssm_parameter" "admin_password_hash" {
+  name            = local.admin_password_ssm_path
+  with_decryption = true
+}
+
 resource "helm_release" "argocd" {
   name       = "argocd"
   repository = "https://argoproj.github.io/argo-helm"
@@ -16,6 +26,10 @@ resource "helm_release" "argocd" {
       {
         name  = "notifications.enabled"
         value = "false"
+      },
+      {
+        name  = "configs.secret.argocdServerAdminPassword"
+        value = data.aws_ssm_parameter.admin_password_hash.value
       }
     ],
     var.ingress_enabled ? [
@@ -30,6 +44,13 @@ resource "helm_release" "argocd" {
       {
         name  = "server.ingress.hostname"
         value = var.ingress_hostname
+      },
+      {
+        # argocd-server's own self-signed TLS would otherwise mismatch nginx's
+        # plain-HTTP proxying to the backend. Traffic is already inside the VPN
+        # tunnel + private VPC network, so dropping TLS here is fine for this project.
+        name  = "server.insecure"
+        value = "true"
       }
     ] : []
   )
@@ -50,7 +71,7 @@ resource "kubectl_manifest" "chess_chart_applicationset" {
       generators:
         - list:
             elements:
-    %{ for env in var.environments ~}
+    %{for env in var.environments~}
               - env: ${env.name}
                 namespace: ${env.namespace}
                 valuesFile: ${env.values_file}
@@ -58,7 +79,7 @@ resource "kubectl_manifest" "chess_chart_applicationset" {
                 automated: ${env.automated}
                 prune: ${env.prune}
                 selfHeal: ${env.self_heal}
-    %{ endfor ~}
+    %{endfor~}
       template:
         metadata:
           name: 'chess-chart-{{.env}}'

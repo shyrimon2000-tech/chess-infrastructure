@@ -20,4 +20,8 @@ inputs = {
   cluster_name       = "chess-prod"
   vpc_id             = dependency.vpc.outputs.vpc_id
   private_subnet_ids = dependency.vpc.outputs.private_subnet_ids
+
+  # Never commit the real ARN (account ID + IAM username) — export before apply:
+  # export ADMIN_PRINCIPAL_ARN=$(aws sts get-caller-identity --query Arn --output text)
+  admin_principal_arn = get_env("ADMIN_PRINCIPAL_ARN", "")
 }

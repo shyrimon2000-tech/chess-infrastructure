@@ -66,13 +66,14 @@ Prod quota is lower than staging despite having HPA enabled — no in-cluster My
 **Dev / Staging** — internal only, not exposed to the internet.
 
 - **CI/CD access** — self-hosted ECS Fargate runner in private subnet (runs `terragrunt apply`, `helm`, `kubectl`)
-- **Admin/developer access** — WireGuard VPN into the VPC (Terraform module planned); once connected, all private resources are reachable directly
+- **Admin/developer access** — WireGuard VPN into the VPC (`vpn-shared.<domain>` / `vpn-prod.<domain>`, wg-easy + Caddy on EC2 in the public subnet, SSM-only — no SSH). Split-tunnel: only the VPC CIDR routes through the tunnel, not `0.0.0.0/0`.
 
-Planned hostnames (Route53 private hosted zone, not yet provisioned):
+Hostnames (Route53 private hosted zone `chess.internal`, associated with the shared VPC):
 - `dev.chess.internal` → dev namespace
 - `staging.chess.internal` → staging namespace
+- `argocd.chess.internal` → ArgoCD UI (shared instance)
 
-Both point to the nginx ingress on the shared EKS cluster. Traffic stays within the VPC.
+All three point to the same internal NLB (ingress-nginx on Fargate). Traffic stays within the VPC — resolvable only once connected to the VPN, since the DNS server pushed to VPN peers is the VPC resolver.
 
 **Prod** — public via ALB + Route53 public hosted zone. TLS terminated at the ALB.
 
@@ -86,6 +87,35 @@ Both point to the nginx ingress on the shared EKS cluster. Traffic stays within 
 ## Terraform
 
 Cloud infrastructure provisioned with Terraform + Terragrunt. State stored in S3 (`chess-terraform-state-221556121262`, us-east-1, versioning enabled).
+
+### Prerequisites (anyone reusing this repo, read this first)
+
+None of the values below are committed — the repo is safe to fork/publish, but `terragrunt apply` will fail (or silently skip an optional feature) until you provide them yourself.
+
+**Environment variable — set before every apply:**
+
+| Variable | Purpose | How to get it |
+|---|---|---|
+| `ADMIN_PRINCIPAL_ARN` | Your personal IAM principal — granted an EKS access entry (`AmazonEKSClusterAdminPolicy`) so `kubectl` keeps working once applies move to CI and `enable_cluster_creator_admin_permissions` no longer covers you | `aws sts get-caller-identity --query Arn --output text` |
+
+Not committed on purpose: it pairs your AWS account ID with a specific IAM username — more targeted information than the account ID alone (which is already visible in the state bucket name, see below).
+
+**SSM SecureString parameters — create manually per environment before apply** (Terraform only reads these, never creates them — same reasoning as the state bucket: bootstrap secrets can't be managed by the tool that needs them to authenticate):
+
+| Path | Used by |
+|---|---|
+| `/chess-shared/github-runner/app-id`, `/chess-shared/github-runner/app-private-key` | ecs-runner (GitHub App credentials) |
+| `/chess-prod/github-runner/app-id`, `/chess-prod/github-runner/app-private-key` | ecs-runner (GitHub App credentials) |
+| `/chess-shared/vpn/wg-easy-password-hash` | vpn (wg-easy admin panel login) |
+| `/chess-prod/vpn/wg-easy-password-hash` | vpn (wg-easy admin panel login) |
+| `/chess-shared/argocd/admin-password-hash` | argocd (`admin` login for the ArgoCD UI) |
+| `/chess-prod/argocd/admin-password-hash` | argocd (`admin` login for the ArgoCD UI) |
+
+Generate a wg-easy password hash with: `docker run ghcr.io/wg-easy/wg-easy wgpw '<password>'`
+
+Generate an ArgoCD admin password hash with: `argocd account bcrypt --password '<password>'` (requires the `argocd` CLI)
+
+**Domain you must own:** the `vpn` module assumes a public Route53 hosted zone already exists (`alexit.online` by default, override via `public_domain` input) — it only adds `vpn-shared`/`vpn-prod` A records into it, it does not create the zone itself.
 
 ### Bootstrap (one-time, per AWS account)
 
@@ -119,28 +149,40 @@ terraform/
 ├── root.hcl                        # S3 backend + AWS provider (generated per environment)
 ├── modules/
 │   ├── vpc/                        # VPC module
-│   ├── eks/                        # EKS cluster + Fargate profiles
+│   ├── eks/                        # EKS cluster + Fargate profiles + personal access entry
 │   ├── karpenter/                  # Karpenter IAM + SQS + Helm chart
 │   ├── nodepools/                  # EC2NodeClass + NodePool CRDs
-│   └── ecs-runner/                 # Self-hosted GitHub Actions runner on ECS Fargate
+│   ├── ecs-runner/                 # Self-hosted GitHub Actions runner on ECS Fargate
+│   ├── ingress-nginx/              # Internal NLB ingress controller (shared only)
+│   ├── route53/                    # Private hosted zone (chess.internal) — dev/staging/argocd records
+│   ├── vpn/                        # WireGuard (wg-easy + Caddy) — SSM-only EC2, public subnet
+│   └── argocd/                     # ArgoCD + chess-chart ApplicationSet (GitOps bootstrap)
 └── environments/
     ├── shared/                     # dev + staging (one cluster, separate namespaces)
     │   ├── vpc/                    # 10.0.0.0/16
     │   ├── eks/                    # chess-shared cluster
     │   ├── karpenter/              # Karpenter on Fargate
     │   ├── nodepools/              # Spot instances
-    │   └── ecs-runner/             # Fargate runner in shared VPC
+    │   ├── ecs-runner/             # Fargate runner in shared VPC — excluded from run-all, building last
+    │   ├── ingress-nginx/          # internal NLB
+    │   ├── route53/                # chess.internal private zone
+    │   ├── vpn/                    # vpn-shared.<domain>
+    │   └── argocd/                 # dev (automated+prune) + staging (manual)
     └── prod/
         ├── vpc/                    # 192.168.0.0/16
         ├── eks/                    # chess-prod cluster
         ├── karpenter/              # Karpenter on Fargate
         ├── nodepools/              # on-demand instances
-        └── ecs-runner/             # Fargate runner in prod VPC
+        ├── ecs-runner/             # Fargate runner in prod VPC — excluded from run-all, building last
+        ├── vpn/                    # vpn-prod.<domain>
+        └── argocd/                 # prod (manual sync)
 ```
 
-Apply order (Layer 0 — GitHub-hosted runner): `vpc → ecs-runner`
+Apply order (Layer 0 — GitHub-hosted runner): `vpc → ecs-runner` — **deferred**: `ecs-runner` units have `exclude { if = true, actions = ["all"] }` in their terragrunt.hcl and are skipped by `run-all`. Building it last, once everything else is stable and applying manually stops being enough.
 
-Apply order (Layer 1 — self-hosted Fargate runner): `eks → karpenter → nodepools`
+Apply order (Layer 1 — self-hosted Fargate runner): `eks → vpn → karpenter → nodepools → ingress-nginx → route53 → argocd`
+
+EKS API endpoint is currently `endpoint_public_access = true` — temporary, while still applying from a laptop and before the VPN module has actually been applied and connected. `vpc`, `eks`, and `vpn` only call AWS APIs, so they can be applied from anywhere regardless. `karpenter`, `nodepools`, `ingress-nginx`, and `argocd` use the `helm`/`kubectl` Terraform providers, which need a live connection to the cluster's Kubernetes API — once the VPN is applied and connected, flip `endpoint_public_access` to `false` and apply those only through the tunnel (or from the ECS runner, which already sits inside the VPC).
 
 ### Architectural Decisions
 
@@ -156,10 +198,10 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 
 | Tier | Components | Compute |
 |------|-----------|---------|
-| Fargate | Karpenter controller, ArgoCD, Grafana, CoreDNS | Fargate micro-VM per pod |
+| Fargate | Karpenter controller, ArgoCD, Grafana, CoreDNS, ingress-nginx (shared only) | Fargate micro-VM per pod |
 | EC2 (Karpenter) | All chess microservices, Prometheus | Spot (shared) / on-demand (prod) |
 
-- API endpoint: currently `endpoint_public_access = true` (temporary, for initial provisioning). Will be set to private-only once the ECS runner is in place.
+- API endpoint: currently `endpoint_public_access = true` (temporary, still applying from a laptop). Will be set to private-only once the VPN is applied and connected — or the ECS runner is in place, whichever comes first.
 - IRSA used for Karpenter and EBS CSI Driver (pod identity agent not available on Fargate at time of writing)
 - Addons: CoreDNS (Fargate), kube-proxy, VPC CNI, EBS CSI Driver
   - CoreDNS runs on Fargate via `kube-system` Fargate profile (label: `k8s-app=kube-dns`) — bootstraps DNS before Karpenter provisions EC2 nodes
@@ -181,6 +223,14 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 - Prod: S3 + CloudFront (static assets, no pod in cluster)
 - Dev / Staging: container in EKS (shared cluster)
 
+**ArgoCD / GitOps**
+- One `ApplicationSet` per ArgoCD instance (`chess-chart`), `list` generator + `goTemplate: true` — each environment is one entry (name, namespace, values file, branch, sync policy), not a hand-written `Application` per env
+- Bootstrap (the `ApplicationSet` itself) is created by Terraform (`kubectl_manifest`), not a manual one-time `kubectl apply` — keeps `terragrunt apply` alone sufficient to rebuild the whole GitOps loop from zero. Everything downstream (image tags, replicas, values) still flows through git only.
+- Branch mapping: dev + staging watch the `dev` branch, prod watches `main`
+- Sync policy: dev = automated + prune (no selfHeal — keeps live `kubectl` debugging possible without instant revert), staging + prod = manual
+- `server.insecure = true` when ingress is enabled — argocd-server's own self-signed TLS would otherwise mismatch nginx's plain-HTTP proxy to the backend; acceptable since traffic is already inside the VPN tunnel + private VPC
+- No verified community Terraform module exists for ArgoCD — installed via raw `helm_release` (argo-helm chart), same as Karpenter
+
 ### Progress
 
 | Module | Status |
@@ -190,11 +240,15 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 | EKS (shared + prod) | applied ✓, smoke-tested on shared |
 | Karpenter (shared + prod) | applied ✓, smoke-tested on shared |
 | NodePools (shared + prod) | applied ✓, smoke-tested on shared |
-| ECS runner (shared + prod) | written, not yet applied |
+| ECS runner (shared + prod) | written, **deferred on purpose** (`exclude` in terragrunt.hcl) — building last |
+| ingress-nginx (shared) | written, validate ✓, not yet applied |
+| Route53 private zone (shared) | written, validate ✓, not yet applied |
+| VPN — WireGuard (shared + prod) | written, validate ✓, not yet applied |
+| ArgoCD (shared + prod) | written, validate ✓, not yet applied |
 | RDS (prod) | not started |
 | ElastiCache / Redis (prod) | not started |
-| ALB Ingress Controller | not started |
-| Route53 / DNS | not started |
+| ALB Ingress Controller (prod) | not started |
+| Route53 public zone (prod) | not started |
 | S3 + CloudFront (prod frontend) | not started |
 
 > Shared environment was applied and smoke-tested, then torn down. Prod environment not yet applied. Full apply will run via GitHub Actions CD once the pipeline is wired up.

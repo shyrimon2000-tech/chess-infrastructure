@@ -52,6 +52,8 @@ EOF
 }
 
 inputs = {
+  name = "chess-prod"
+
   environments = [
     {
       name            = "prod"

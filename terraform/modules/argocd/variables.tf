@@ -1,3 +1,8 @@
+variable "name" {
+  description = "Name prefix for this ArgoCD instance (e.g. chess-shared) — used to derive its SSM parameter path"
+  type        = string
+}
+
 variable "argocd_version" {
   description = "ArgoCD Helm chart version (verify current release before apply — see argo-helm releases)"
   type        = string

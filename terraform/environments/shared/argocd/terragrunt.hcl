@@ -52,6 +52,8 @@ EOF
 }
 
 inputs = {
+  name = "chess-shared"
+
   environments = [
     {
       name            = "dev"

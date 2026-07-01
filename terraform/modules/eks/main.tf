@@ -1,6 +1,6 @@
 module "eks" {
-  source          = "terraform-aws-modules/eks/aws"
-  version         = "~> 21.0"
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
 
   name               = var.cluster_name
   kubernetes_version = var.cluster_version
@@ -9,13 +9,13 @@ module "eks" {
   subnet_ids = var.private_subnet_ids
 
   addons = {
-    coredns                = {
+    coredns = {
       configuration_values = jsonencode({
         computeType = "Fargate"
       })
     }
-    kube-proxy             = {}
-    vpc-cni                = {
+    kube-proxy = {}
+    vpc-cni = {
       before_compute = true
       configuration_values = jsonencode({
         nodeSelector = {
@@ -23,9 +23,9 @@ module "eks" {
         }
       })
     }
-    aws-ebs-csi-driver     = {
+    aws-ebs-csi-driver = {
       service_account_role_arn = module.irsa_ebs_csi.arn
-      configuration_values     = jsonencode({
+      configuration_values = jsonencode({
         controller = { affinity = {} }
       })
     }
@@ -71,10 +71,22 @@ module "eks" {
     }
   }
 
-  endpoint_public_access  = true  # temporary: remove after ECS runner is ready
+  endpoint_public_access  = true # temporary: still applying from a laptop, not yet through the VPN — flip to false once VPN is actually applied and connected
   endpoint_private_access = true
 
   enable_cluster_creator_admin_permissions = true
+
+  access_entries = var.admin_principal_arn != "" ? {
+    personal = {
+      principal_arn = var.admin_principal_arn
+      policy_associations = {
+        admin = {
+          policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          access_scope = { type = "cluster" }
+        }
+      }
+    }
+  } : {}
 
   tags = var.tags
 }

@@ -20,6 +20,7 @@ services:
       - WG_HOST=${wg_host}
       - PASSWORD_HASH=${password_hash}
       - WG_DEFAULT_DNS=${wg_default_dns}
+      - WG_ALLOWED_IPS=${wg_allowed_ips}
     volumes:
       - ./wg-easy:/etc/wireguard
     ports:

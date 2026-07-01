@@ -93,6 +93,7 @@ resource "aws_instance" "vpn" {
   user_data = templatefile("${path.module}/user_data.sh.tpl", {
     wg_host        = local.vpn_hostname
     wg_default_dns = cidrhost(var.vpc_cidr, 2)
+    wg_allowed_ips = var.vpc_cidr
     password_hash  = data.aws_ssm_parameter.wg_easy_password_hash.value
   })
 

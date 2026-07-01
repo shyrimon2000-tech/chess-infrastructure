@@ -2,6 +2,14 @@ include "root" {
   path = find_in_parent_folders("root.hcl")
 }
 
+# Deferred on purpose — building this last, once everything else (karpenter,
+# nodepools, ingress-nginx, route53, argocd) is stable. Applying manually from
+# a laptop for now; ecs-runner is what would eventually move applies into CI.
+exclude {
+  if      = true
+  actions = ["all"]
+}
+
 terraform {
   source = "../../../modules/ecs-runner"
 }
