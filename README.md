@@ -212,7 +212,7 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 - IRSA used for Karpenter and EBS CSI Driver (pod identity agent not available on Fargate at time of writing)
 - Addons created in the `eks` module: CoreDNS, kube-proxy, VPC CNI
   - CoreDNS runs on Fargate via `kube-system` Fargate profile (label: `k8s-app=kube-dns`) — bootstraps DNS before Karpenter provisions EC2 nodes
-  - VPC CNI (`aws-node`) pinned off Fargate via `affinity.nodeAffinity` on `eks.amazonaws.com/compute-type NotIn ["fargate"]`
+  - VPC CNI (`aws-node`) pinned off Fargate via `affinity.nodeAffinity` on `eks.amazonaws.com/compute-type NotIn ["fargate"]` — see **Troubleshooting → "VPC CNI's node-affinity matched zero real nodes"** for why it's `NotIn` and not the more obvious-looking `In ["ec2"]`
 - **Design rule: anything whose pod needs a real EC2 node doesn't belong in `eks`.** `eks` only creates what can run on Fargate or needs no compute at all (cluster, core addons, IAM). The EBS CSI Driver addon + its IRSA role live in `nodepools` instead, applied only once Karpenter has a `NodePool` to actually provision from. Same rule extended to `argocd`/`eso` via ordering-only terragrunt dependencies (`argocd → ingress-nginx`, `eso → nodepools`) rather than moving those modules themselves, since they don't own compute-dependent *resources*, just need something else's compute to exist first. Learned the hard way — see **Troubleshooting → "Addons stuck waiting for compute that doesn't exist yet"**.
 - Access entries: `enable_cluster_creator_admin_permissions = false`; `access_entries.personal` created unconditionally from `ADMIN_PRINCIPAL_ARN` (see Prerequisites) — no implicit "whoever applies becomes admin" fallback
 - Fargate↔EC2 security group bridge (`cluster_primary_security_group_id` ↔ `node_security_group_id`) — see **Troubleshooting → "No DNS resolution on EC2-hosted pods"**
@@ -242,7 +242,7 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 - Bootstrap (both `ApplicationSet`s) is created by Terraform (`kubectl_manifest`), not a manual one-time `kubectl apply` — keeps `terragrunt apply` alone sufficient to rebuild the whole GitOps loop from zero. Everything downstream (image tags, replicas, values) still flows through git only.
 - Branch mapping: dev + staging watch the `dev` branch, prod watches `main`
 - Sync policy: dev = automated + prune (no selfHeal — keeps live `kubectl` debugging possible without instant revert), staging + prod = manual
-- `server.insecure = true` when ingress is enabled — argocd-server's own self-signed TLS would otherwise mismatch nginx's plain-HTTP proxy to the backend; acceptable since traffic is already inside the VPN tunnel + private VPC. See **Troubleshooting → "Helm/Terraform state can look fine while the cluster disagrees"** for why this setting didn't actually take effect on the first few applies.
+- Set via `configs.params.server\\.insecure` (not `server.insecure`, a nested key the chart never reads — see **Troubleshooting → "Helm `set` key silently pointed at a value nothing reads"**) when ingress is enabled — argocd-server's own self-signed TLS would otherwise mismatch nginx's plain-HTTP proxy to the backend; acceptable since traffic is already inside the VPN tunnel + private VPC.
 - No verified community Terraform module exists for ArgoCD — installed via raw `helm_release` (argo-helm chart), same as Karpenter
 - `argocd` has an ordering-only terragrunt dependency on `ingress-nginx` (output unused) — see **Troubleshooting → "Addons stuck waiting for compute that doesn't exist yet"**, same class of race, different trigger (admission webhook, not compute)
 
@@ -266,7 +266,7 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 | ingress-nginx (shared + prod) | verified working (shared) — prod unit newly written, not yet applied — **currently torn down** |
 | Route53 private zone (shared + prod) | verified working (shared, `dev`/`staging`/`argocd.chess.internal`) — prod unit (`chess-prod.internal`, argocd-only) newly written, not yet applied — **currently torn down** |
 | VPN — WireGuard (shared + prod) | verified working (shared) — **currently torn down** |
-| ArgoCD (shared + prod) | verified working (shared) — see Troubleshooting for the ApplicationSet/ConfigMap bugs; prod now wired for VPN-only ingress too — **currently torn down** |
+| ArgoCD (shared + prod) | **verified working end-to-end on both** — shared (2026-07-02) and prod (2026-07-02, VPN-only ingress, ArgoCD reachable) — see Troubleshooting for the ApplicationSet/`configs.params` bugs — **currently torn down** |
 | ESO — External Secrets (shared + prod) | verified working (shared) — `ClusterSecretStore` valid, `ExternalSecret`s synced — **currently torn down** |
 | RDS (prod) | not started — not required by interview task, deferred indefinitely |
 | ElastiCache / Redis (prod) | not started — not required by interview task, deferred indefinitely |
@@ -428,6 +428,18 @@ Caddy handles TLS termination automatically via Let's Encrypt. The cluster only 
 
 ---
 
+#### VPC CNI's node-affinity matched zero real nodes
+
+**Symptom:** freshly-provisioned Karpenter EC2 nodes sat `NotReady` for 40+ minutes, `kubectl describe node` showing `container runtime network not ready: cni plugin not initialized`. Every pod on those nodes — not just one workload — was unschedulable, because nothing could get network at all.
+
+**Cause:** the VPC CNI addon's `affinity.nodeAffinity` used `eks.amazonaws.com/compute-type In ["ec2"]`, meant to keep the `aws-node` DaemonSet off Fargate (Fargate has its own built-in pod networking and doesn't need or support this DaemonSet at all). But real Karpenter-provisioned nodes carry an opaque per-node value for that label, not the literal string `"ec2"` — so the selector matched zero real nodes anywhere. `aws-node` sat at `DESIRED=0` cluster-wide, meaning no node — Fargate or EC2 — could ever report `NetworkReady`.
+
+**Solution:** inverted the match: `NotIn ["fargate"]` instead of `In ["ec2"]` — matches everything that *isn't* Fargate, regardless of what the real EC2-side label value actually is, instead of trying to guess/enumerate it.
+
+**Lesson (the interesting part):** this entire bug class only exists *because* of the Fargate+EC2 hybrid compute model. A pure-EC2 cluster would run `aws-node` on every node unconditionally — no affinity rule, no label-matching logic, no way for this specific mistake to happen at all. The hybrid model saves real money (see Design rule above — no dedicated always-on infra node group needed), but it isn't a free lunch: mixing two different compute backends inside one cluster adds a real class of "which components can/must run where" complexity that a simpler, single-backend cluster wouldn't have to think about. Worth being able to name that trade-off explicitly, not just the cost side of it.
+
+---
+
 #### Addons stuck waiting for compute that doesn't exist yet
 
 **Symptom:** `aws-ebs-csi-driver` and the ESO controller's `helm_release` both hung during `terraform apply` — the addon sat in `DEGRADED` health (`InsufficientNumberOfReplicas ... 0/N nodes are available`) until its 20-minute create timeout expired (`CREATE_FAILED`), and ESO's `helm_release` failed with `context deadline exceeded`.
@@ -450,15 +462,29 @@ Caddy handles TLS termination automatically via Let's Encrypt. The cluster only 
 
 ---
 
-#### Helm/Terraform state can look fine while the cluster disagrees
+#### Helm `set` key silently pointed at a value nothing reads
 
-**Symptom:** ArgoCD UI redirect-looped (`ERR_TOO_MANY_REDIRECTS`) even after adding the ingress-nginx annotations that should have stopped it (`ssl-redirect: false`).
+**Symptom:** ArgoCD UI redirect-looped (`ERR_TOO_MANY_REDIRECTS`) even after adding the ingress-nginx annotations that should have stopped it (`ssl-redirect: false`), and even after re-applying. Reproduced identically on **shared** (many failed/retried revisions) and, later, on **prod** — a completely clean, single-revision, first-try `helm install` with no failures in its history at all. The fact that a from-scratch clean install hit the exact same symptom is what proved the real cause wasn't upgrade-related.
 
-**Cause:** `curl -v` showed the redirect coming from **argocd-server itself** (Go's default `http.Redirect` response body, no nginx framing) — meaning `server.insecure = true` never reached the running process. This chart applies that setting via the `argocd-cmd-params-cm` ConfigMap (read once at pod startup), not a CLI flag. `helm get values` confirmed `insecure: true` was in the latest release's user-supplied values, and `helm history` showed the latest revision as `STATUS: deployed` — but every one of its 4 revisions carried a failure description from the ingress-nginx admission-webhook race above, meaning each `helm upgrade` kept dying partway through applying the chart's resources, before ever reaching the ConfigMap.
+**First (wrong, but not unreasonable) theory:** `curl -v` showed the redirect coming from **argocd-server itself**, not nginx — meaning `server.insecure = true` never reached the running process. `kubectl get cm argocd-cmd-params-cm -o jsonpath='{.data}'` showed `"server.insecure":"false"`, while `helm history` on shared showed several revisions that had each failed partway through (the ingress-nginx admission-webhook race above) before reaching a `deployed` status. Concluded the ConfigMap patch was getting skipped by those partial failures — patched it directly as a workaround (`kubectl patch cm ... server.insecure=true` + `kubectl rollout restart`) and moved on.
 
-**Solution:** patched the ConfigMap directly (`kubectl patch cm argocd-cmd-params-cm --type merge -p '{"data":{"server.insecure":"true"}}'`) and `kubectl rollout restart deployment/argocd-server` (ConfigMap changes aren't hot-reloaded). The same underlying class of issue also showed up separately as `helm_release` resources failing with `cannot re-use a name that is still in use`: an earlier interrupted `terraform apply` had gotten far enough for `helm install` to actually create and stabilize the release in-cluster, but the Terraform process was killed before persisting that resource to state. Fixed with `terraform import <namespace>/<release>` rather than deleting a genuinely healthy release.
+**Real cause, found once prod reproduced it on a clean install:** the Terraform `set` block used `name = "server.insecure"` — which Helm's `--set` syntax parses as **nested** YAML (`server: { insecure: true }`). The chart doesn't read TLS mode from there at all; `helm show values argo-cd --version 7.7.11` shows it's actually a **flat key with a literal dot in its name**, `configs.params."server.insecure"`, which is what populates `argocd-cmd-params-cm`. Confirmed against the `hashicorp/helm` provider's own docs (via the Terraform MCP server) that escaping a literal dot inside a flat key needs a double backslash in HCL: `name = "configs.params.server\\.insecure"`. The old key set a value the chart simply never looked at — on every single apply, clean or not, regardless of how many revisions it took.
 
-**Lesson:** `STATUS: deployed` on the latest Helm revision, or a resource simply existing, doesn't guarantee its values fully landed — check the live resource against what you actually expect, not just release/state metadata.
+**Solution:** fixed the `set` block to `configs.params.server\\.insecure`. Confirmed working end-to-end on a real prod apply — ArgoCD came up reachable over the VPN with no manual ConfigMap patch needed.
+
+**Lesson:** a plausible-sounding first theory that explains *some* of the evidence (failed revisions were real, the ConfigMap really was wrong) isn't the same as the actual root cause — the reproduction on a clean, unrelated install (different environment, zero failed revisions) is what falsified it. Also: Helm's `--set` dotted-path syntax is ambiguous by design — the same string can mean "nested key" or "flat key with a dot," and only the chart's own `values.yaml` tells you which one it actually reads.
+
+---
+
+#### Interrupted `terraform apply` leaves a real Helm release Terraform doesn't know about
+
+**Symptom:** `helm_release` resources failing with `cannot re-use a name that is still in use`, even though Terraform's state shows no such resource yet.
+
+**Cause:** an earlier interrupted `terraform apply` had gotten far enough for `helm install` to actually create and stabilize the release in-cluster, but the Terraform process was killed (or hit an unrelated error later in the same run) before persisting that resource to state. Terraform, seeing nothing in its own state, tries a fresh `helm install` and Helm refuses since a release with that name already exists.
+
+**Solution:** `terraform import <namespace>/<release>` rather than deleting a genuinely healthy release and reinstalling.
+
+**Lesson:** a resource existing, or `helm history` showing `STATUS: deployed`, doesn't guarantee Terraform's state agrees — check the live resource against what you actually expect, not just release/state metadata.
 
 ---
 
