@@ -46,30 +46,52 @@ resource "kubectl_manifest" "nodepool" {
 # `aws ec2 terminate-instances` to unblock destroy).
 resource "null_resource" "wait_for_node_termination" {
   triggers = {
-    node_iam_role_name = var.node_iam_role_name
+    node_iam_role_name    = var.node_iam_role_name
+    local_exec_shell_path = var.local_exec_shell_path
   }
 
   depends_on = [kubectl_manifest.nodepool]
 
+  # Interpreter is parameterized (routed through triggers, since destroy-time
+  # provisioners can only reference `self.*`), not hardcoded —
+  # this provisioner runs on whatever machine is actually applying Terraform,
+  # which varies: a Linux CI runner (the eventual ecs-runner / GitHub Actions
+  # concept) has a real /bin/sh; this project is currently still applied from
+  # a Windows laptop, which doesn't. Three failed attempts taught real
+  # lessons about *which* shell actually exists before landing on this:
+  #   1. `interpreter = ["/bin/sh", "-c"]` hardcoded — not a real Windows
+  #      path, failed instantly (`exec: "/bin/sh": executable file not found`).
+  #   2. No interpreter (OS default = cmd.exe on Windows) with a plain
+  #      `aws ec2 wait ...` command, on the theory that a single flat command
+  #      needs no shell-specific syntax — wrong: cmd.exe's quote-parsing
+  #      still isn't POSIX-compatible, and it mangled the `--filters` value
+  #      (`Expected: '=', received: '"'`).
+  #   3. `sh`/`bash` resolved via bare PATH lookup — found, but both hits
+  #      (`C:\Windows\System32\bash.exe`, `...\WindowsApps\bash.exe`) are WSL
+  #      launcher stubs that fail with `execvpe(/bin/bash) failed: No such
+  #      file or directory` when WSL itself isn't set up — same failure class
+  #      as the documented `python3`-vs-`python` Windows Store alias gotcha
+  #      elsewhere in this project.
+  # What actually works, confirmed directly (not assumed): Git for Windows'
+  # own bash.exe, at its real absolute install location — set via
+  # TF_VAR_local_exec_shell_path (or the Terragrunt env-var passthrough, same
+  # pattern as ADMIN_PRINCIPAL_ARN) on machines where /bin/sh isn't real.
+  # `aws ec2 wait instance-terminated` does NOT treat a zero-match filter as
+  # instant success — confirmed for real 2026-07-02: with genuinely zero
+  # matching instances in the account, it still burned its full default
+  # attempt budget and failed with "Max attempts exceeded" instead of
+  # returning immediately. Checking the count first and only invoking the
+  # waiter when there's something to actually wait for avoids this.
   provisioner "local-exec" {
     when        = destroy
-    interpreter = ["/bin/sh", "-c"]
+    interpreter = [self.triggers.local_exec_shell_path, "-c"]
     command     = <<-EOT
       set -eu
-      for i in $(seq 1 60); do
-        count=$(aws ec2 describe-instances \
-          --filters "Name=iam-instance-profile.arn,Values=*${self.triggers.node_iam_role_name}*" \
-                    "Name=instance-state-name,Values=pending,running,shutting-down,stopping" \
-          --query 'length(Reservations[].Instances[])' --output text --region us-east-1)
-        if [ "$count" = "0" ]; then
-          echo "All Karpenter-provisioned nodes terminated."
-          exit 0
-        fi
-        echo "Waiting for $count Karpenter node(s) to finish terminating... ($i/60)"
-        sleep 10
-      done
-      echo "Timed out after 10 minutes waiting for node termination — check for orphaned instances (Karpenter controller may already be gone)." >&2
-      exit 1
+      filters=(--filters "Name=iam-instance-profile.arn,Values=*${self.triggers.node_iam_role_name}*" "Name=instance-state-name,Values=pending,running,shutting-down,stopping")
+      count=$(aws ec2 describe-instances --region us-east-1 "$${filters[@]}" --query 'length(Reservations[].Instances[])' --output text)
+      if [ "$count" != "0" ]; then
+        aws ec2 wait instance-terminated --region us-east-1 "$${filters[@]}"
+      fi
     EOT
   }
 }

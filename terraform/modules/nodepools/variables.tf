@@ -40,3 +40,9 @@ variable "memory_limit" {
   type        = string
   default     = "32Gi"
 }
+
+variable "local_exec_shell_path" {
+  description = "Path to the POSIX shell binary used to run the destroy-time node-termination wait. Defaults to /bin/sh, a real path on Linux (a GitHub Actions runner, self-hosted or hosted) — override only for a machine where that path doesn't exist, e.g. a Windows laptop, where it should point at Git for Windows' bash.exe."
+  type        = string
+  default     = "/bin/sh"
+}

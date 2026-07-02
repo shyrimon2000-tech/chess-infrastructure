@@ -52,4 +52,9 @@ inputs = {
   consolidate_after    = "5m"
   cpu_limit            = "8"
   memory_limit         = "32Gi"
+
+  # /bin/sh (module default) is correct for a real Linux apply environment
+  # (e.g. a GitHub Actions runner) — override only when applying from a
+  # machine where that path isn't real, e.g. this Windows laptop.
+  local_exec_shell_path = get_env("TF_LOCAL_EXEC_SHELL", "/bin/sh")
 }
