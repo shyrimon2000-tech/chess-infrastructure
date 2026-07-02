@@ -211,7 +211,7 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 - Addons created in the `eks` module: CoreDNS, kube-proxy, VPC CNI
   - CoreDNS runs on Fargate via `kube-system` Fargate profile (label: `k8s-app=kube-dns`) — bootstraps DNS before Karpenter provisions EC2 nodes
   - VPC CNI (`aws-node`) pinned off Fargate via `affinity.nodeAffinity` on `eks.amazonaws.com/compute-type NotIn ["fargate"]`
-- EBS CSI Driver addon + its IRSA role live in the `nodepools` module, not `eks` — see **Troubleshooting → "Addons stuck waiting for compute that doesn't exist yet"**
+- **Design rule: anything whose pod needs a real EC2 node doesn't belong in `eks`.** `eks` only creates what can run on Fargate or needs no compute at all (cluster, core addons, IAM). The EBS CSI Driver addon + its IRSA role live in `nodepools` instead, applied only once Karpenter has a `NodePool` to actually provision from. Same rule extended to `argocd`/`eso` via ordering-only terragrunt dependencies (`argocd → ingress-nginx`, `eso → nodepools`) rather than moving those modules themselves, since they don't own compute-dependent *resources*, just need something else's compute to exist first. Learned the hard way — see **Troubleshooting → "Addons stuck waiting for compute that doesn't exist yet"**.
 - Access entries: `enable_cluster_creator_admin_permissions = false`; `access_entries.personal` created unconditionally from `ADMIN_PRINCIPAL_ARN` (see Prerequisites) — no implicit "whoever applies becomes admin" fallback
 - Fargate↔EC2 security group bridge (`cluster_primary_security_group_id` ↔ `node_security_group_id`) — see **Troubleshooting → "No DNS resolution on EC2-hosted pods"**
 
@@ -222,9 +222,7 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 - **prod**: on-demand instances — no interruptions for active game sessions and room state (Redis)
 - Consolidation: `WhenEmptyOrUnderutilized` + 30s (shared), `WhenEmpty` + 5m (prod)
 - Node limits: 8 CPU / 32Gi per cluster (parametrized via `cpu_limit` / `memory_limit` inputs)
-- `time_sleep` (90s) on NodePool destroy — gives Karpenter time to drain and terminate EC2 nodes before Karpenter itself is uninstalled; without this, instances are orphaned and block Security Group deletion
-  - Karpenter's NodeClaim/Node objects do carry a finalizer that blocks deletion until the instance is actually terminated, and `kubectl_manifest` (provider `alekc/kubectl`) waits on that finalizer rather than firing-and-forgetting — but the exact wait timeout wasn't verifiable from provider source, so it isn't a guaranteed substitute for the sleep
-  - `time_sleep` is a fixed guess, not a real wait condition — acceptable for a pet project, but in production this should be a `null_resource` + `local-exec` (`when = destroy`) polling `aws ec2 describe-instances` for the actual termination state instead of trusting a duration
+- `null_resource.wait_for_node_termination` (destroy-time `local-exec`) polls `aws ec2 describe-instances` for actual node termination instead of trusting a fixed `time_sleep` duration — see **Troubleshooting → "`terragrunt destroy` fails with `DependencyViolation` deleting the node security group"**
 
 **Frontend**
 - Prod: S3 + CloudFront (static assets, no pod in cluster)
@@ -455,6 +453,16 @@ Caddy handles TLS termination automatically via Let's Encrypt. The cluster only 
 **Solution:** patched the ConfigMap directly (`kubectl patch cm argocd-cmd-params-cm --type merge -p '{"data":{"server.insecure":"true"}}'`) and `kubectl rollout restart deployment/argocd-server` (ConfigMap changes aren't hot-reloaded). The same underlying class of issue also showed up separately as `helm_release` resources failing with `cannot re-use a name that is still in use`: an earlier interrupted `terraform apply` had gotten far enough for `helm install` to actually create and stabilize the release in-cluster, but the Terraform process was killed before persisting that resource to state. Fixed with `terraform import <namespace>/<release>` rather than deleting a genuinely healthy release.
 
 **Lesson:** `STATUS: deployed` on the latest Helm revision, or a resource simply existing, doesn't guarantee its values fully landed — check the live resource against what you actually expect, not just release/state metadata.
+
+---
+
+#### `terragrunt destroy` fails with `DependencyViolation` deleting the node security group
+
+**Symptom:** tearing down the whole shared environment (`terragrunt run --all destroy`) failed on the `eks` unit: `deleting Security Group (sg-...): ... DependencyViolation: resource sg-... has a dependent object`. The EKS cluster itself had already been destroyed successfully (its API endpoint no longer resolved) — only the security group deletion failed.
+
+**Cause:** `aws ec2 describe-network-interfaces --filters Name=group-id,Values=<sg-id>` showed 3 EC2 instances still `running`, ENIs still attached — Karpenter-provisioned nodes that hadn't finished terminating. The existing safeguard (`time_sleep(90s)` on the NodePool's destroy) wasn't just "too short" — it was structurally unable to guarantee anything: `run --all destroy` tears down `karpenter` (the only thing that can gracefully drain and terminate Karpenter-provisioned nodes) in the same overall run, so if node termination takes longer than the guessed sleep, the nodes can outlive the controller that would have terminated them and become **orphaned** — nothing left in the cluster to finish the job, ever, no matter how long you wait.
+
+**Solution:** manually `aws ec2 terminate-instances` on the 3 leftover instances, `aws ec2 wait instance-terminated`, then re-ran destroy — it completed cleanly once the ENIs were gone. Fixed at the code level too: replaced `time_sleep(90s)` with `null_resource` + a destroy-time `local-exec` provisioner that actually polls `aws ec2 describe-instances` (filtered on the Karpenter node IAM instance profile) every 10s for up to 10 minutes instead of trusting a fixed duration. Doesn't fully eliminate the orphaning risk (if Karpenter is already gone, polling just times out instead of hanging forever) — but removes the "guessed 90s, hoped for the best" failure mode for the common case of termination simply taking longer than expected.
 
 ---
 

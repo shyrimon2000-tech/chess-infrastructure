@@ -36,10 +36,42 @@ resource "kubectl_manifest" "nodepool" {
   depends_on = [kubectl_manifest.ec2_node_class]
 }
 
-resource "time_sleep" "wait_for_node_termination" {
+# Polls AWS directly for actual instance termination instead of trusting a
+# fixed sleep duration (the previous `time_sleep(90s)` — real termination of
+# N Spot/on-demand instances isn't bounded by a guessed constant, and if
+# Karpenter's own controller is destroyed before nodes finish draining, they
+# become orphaned with nothing left to terminate them at all, blocking the
+# node security group's deletion indefinitely (`DependencyViolation`, hit for
+# real 2026-07-02: 3 leftover instances, needed a manual
+# `aws ec2 terminate-instances` to unblock destroy).
+resource "null_resource" "wait_for_node_termination" {
+  triggers = {
+    node_iam_role_name = var.node_iam_role_name
+  }
+
   depends_on = [kubectl_manifest.nodepool]
 
-  destroy_duration = "90s"
+  provisioner "local-exec" {
+    when        = destroy
+    interpreter = ["/bin/sh", "-c"]
+    command     = <<-EOT
+      set -eu
+      for i in $(seq 1 60); do
+        count=$(aws ec2 describe-instances \
+          --filters "Name=iam-instance-profile.arn,Values=*${self.triggers.node_iam_role_name}*" \
+                    "Name=instance-state-name,Values=pending,running,shutting-down,stopping" \
+          --query 'length(Reservations[].Instances[])' --output text --region us-east-1)
+        if [ "$count" = "0" ]; then
+          echo "All Karpenter-provisioned nodes terminated."
+          exit 0
+        fi
+        echo "Waiting for $count Karpenter node(s) to finish terminating... ($i/60)"
+        sleep 10
+      done
+      echo "Timed out after 10 minutes waiting for node termination — check for orphaned instances (Karpenter controller may already be gone)." >&2
+      exit 1
+    EOT
+  }
 }
 
 # Lives here, not in the eks module, because its controller pod needs an actual
