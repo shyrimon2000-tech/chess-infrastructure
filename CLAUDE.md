@@ -139,7 +139,7 @@ Single `general` NodePool — all chess services bin-packed on the same nodes.
 - Consolidation: `WhenEmptyOrUnderutilized`, consolidateAfter 30s
 - Node limits: 8 CPU / 32Gi memory
 - room-service uses Redis → cannot tolerate Spot interruptions → prod on-demand
-- game-service holds active game sessions in memory → prod on-demand
+- game-service → prod on-demand. Game state itself is persisted to the DB, so a Spot interruption wouldn't lose data — but the client's reconnect window is a hard 30s timeout: if the pod isn't back up and ready (new node provisioned + scheduled + started + passed readiness) within that window, the player is disconnected and recorded as a loss. A Spot interruption's full notice-to-reschedule cycle can easily exceed 30s, so the risk isn't data loss, it's a real, scored game loss for the player.
 
 ### Networking
 

@@ -75,7 +75,7 @@ Hostnames (Route53 private hosted zone `chess.internal`, associated with the sha
 
 All three point to the same internal NLB (ingress-nginx on Fargate). Traffic stays within the VPC — resolvable only once connected to the VPN, since the DNS server pushed to VPN peers is the VPC resolver.
 
-**Prod** — public via ALB + Route53 public hosted zone. TLS terminated at the ALB.
+**Prod** — chess services public via ALB + Route53 public hosted zone (TLS terminated at the ALB). **ArgoCD stays admin-only, VPN-gated** — same pattern as shared (its own `ingress-nginx`, its own private zone), not on the public ALB. Private zone is `chess-prod.internal`, not `chess.internal` — private zones are VPC-scoped already so there's no real collision risk either way, but the distinct name makes it obvious which environment's ArgoCD a given URL points at. Only the `argocd` record exists here (`route53` module's `records` variable, default `["dev", "staging", "argocd"]`, overridden to `["argocd"]` for prod — no dev/staging namespaces exist in prod).
 
 ## Project Roadmap
 
@@ -175,15 +175,17 @@ terraform/
         ├── eks/                    # chess-prod cluster
         ├── karpenter/              # Karpenter on Fargate
         ├── nodepools/              # on-demand instances
-        ├── ecs-runner/             # Fargate runner in prod VPC — excluded from run-all, building last
+        ├── ecs-runner/             # not wired up — see GitHub Actions CD section
+        ├── ingress-nginx/          # internal NLB, ArgoCD-only (chess services use the public ALB instead)
+        ├── route53/                # chess-prod.internal private zone, argocd record only
         ├── vpn/                    # vpn-prod.<domain>
-        ├── argocd/                 # prod (manual sync)
+        ├── argocd/                 # prod (manual sync), VPN-only ingress
         └── eso/                    # IRSA scoped to /chess-prod/*
 ```
 
-Apply order (Layer 0 — GitHub-hosted runner): `vpc → ecs-runner` — **deferred**: `ecs-runner` units have `exclude { if = true, actions = ["all"] }` in their terragrunt.hcl and are skipped by `run-all`. Building it last, once everything else is stable and applying manually stops being enough.
+Apply order (Layer 0 — GitHub-hosted runner): `vpc → ecs-runner` — **not built**. `ecs-runner` (`exclude { if = true, actions = ["all"] }`, skipped by `run-all`) exists in this repo as a documented *concept* for the eventual self-hosted-runner CD pipeline (see GitHub Actions CD section), not as a near-term deliverable — deprioritized given the deadline, since nothing in the actual requirements depends on *how* Terraform gets applied, only on the resulting infrastructure state.
 
-Apply order (Layer 1 — self-hosted Fargate runner): `eks → vpn → karpenter → nodepools → ingress-nginx → route53 → argocd → eso`
+Apply order (Layer 1 — self-hosted Fargate runner, or a laptop while `endpoint_public_access = true`): `eks → vpn → karpenter → nodepools → ingress-nginx → route53 → argocd → eso` — same shape for both shared and prod now; prod's `ingress-nginx`/`route53` exist solely to keep ArgoCD VPN-only, not for app traffic (that's the public ALB, applied independently).
 
 **`nodepools` must apply before `eso`, `argocd`, `ingress-nginx` can safely apply** — not a hard Terraform dependency for those three, but karpenter/nodepools existing means real EC2 nodes can actually be provisioned once something needs one. `eks` itself must not create anything whose pods can only schedule on EC2 (see EBS CSI Driver note below) for exactly this reason.
 
@@ -219,7 +221,7 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 - Single `general` NodePool — all chess services bin-packed on the same nodes
 - Instance types: t3/t3a medium+large (x86, amd64 only)
 - **shared**: Spot instances — cost optimized, interruptions acceptable in dev/staging
-- **prod**: on-demand instances — no interruptions for active game sessions and room state (Redis)
+- **prod**: on-demand instances — room-service can't tolerate Spot interruptions (Redis). Game-service state is persisted to the DB, so a Spot interruption wouldn't lose data — but the client's reconnect window is a hard 30s timeout, and a Spot interruption's full notice-to-reschedule cycle can easily exceed that, turning into a real scored loss for the player, not just a data-loss risk.
 - Consolidation: `WhenEmptyOrUnderutilized` + 30s (shared), `WhenEmpty` + 5m (prod)
 - Node limits: 8 CPU / 32Gi per cluster (parametrized via `cpu_limit` / `memory_limit` inputs)
 - `null_resource.wait_for_node_termination` (destroy-time `local-exec`) polls `aws ec2 describe-instances` for actual node termination instead of trusting a fixed `time_sleep` duration — see **Troubleshooting → "`terragrunt destroy` fails with `DependencyViolation` deleting the node security group"**
@@ -230,10 +232,12 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 
 **VPN**
 - WireGuard (wg-easy) + Caddy on a single EC2 instance, SSM-only management (no SSH, no port 22)
+- `WG_ALLOWED_IPS` (the split-tunnel CIDR) comes from `dependency.vpc.outputs.cidr`, not a hand-typed literal — `vpc` now exports its own `cidr` output specifically so this can't drift. It used to be duplicated by hand in `vpn/terragrunt.hcl` (`vpc_cidr = "10.0.0.0/16"`) independently of the VPC module's own CIDR (in shared's case, not even set explicitly there — it was the module's default), which the `vpc` module didn't even export as an output at the time. Nothing checked the two matched; they just happened to.
 - `aws_security_group.vpn`'s `description` must stay plain ASCII (AWS EC2 `GroupDescription` rejects em-dashes/smart quotes/etc.)
 - The wg-easy `PASSWORD_HASH` (bcrypt, from SSM) is `replace(..., "$", "$$")`-escaped before going into `docker-compose.yml` — `docker-compose` re-parses `$VAR` syntax in the file at `up` time, independent of the shell that wrote it, and a bcrypt hash's literal `$` separators get silently mangled otherwise
 
 **ArgoCD / GitOps**
+- **`ApplicationSet` (generator + template), not app-of-apps (hand-written `Application` YAML per environment):** the list of environments (name, namespace, values file, branch, sync policy) is already a Terraform variable (`var.environments`), parameterized differently per terragrunt unit (shared vs prod) — feeding it straight into an `ApplicationSet`'s `list` generator avoids re-declaring the same topology a second time as committed YAML files in git. App-of-apps would still need *something* non-GitOps to bootstrap its own root `Application` first anyway (same chicken-and-egg as any ArgoCD bootstrap), so it doesn't buy back the duplication it costs. Trade-off actually paid for this choice: ArgoCD's Go-template runtime substitution doesn't work for strictly-typed CRD fields (see the sync-policy `ApplicationSet` split below) — a hand-written `Application` per environment wouldn't have hit that at all, since there'd be no templating, just literal YAML. Worth it at this scale (2-3 environments); would re-evaluate if the environment count grew a lot.
 - **Two `ApplicationSet`s per ArgoCD instance** (`chess-chart-automated`, `chess-chart-manual`), split by sync mode — not one ApplicationSet with a Go-template `{{if}}` for conditional sync policy, see **Troubleshooting → "Strictly-typed CRD fields can't hold unrendered Go-template placeholders"**. Each is a `list` generator + `goTemplate: true`, filtered in Terraform (`local.automated_environments` / `local.manual_environments`) — `count = length(...) > 0 ? 1 : 0` so an empty split (e.g. prod, 100% manual) doesn't create an ApplicationSet with a null `elements` list.
 - Bootstrap (both `ApplicationSet`s) is created by Terraform (`kubectl_manifest`), not a manual one-time `kubectl apply` — keeps `terragrunt apply` alone sufficient to rebuild the whole GitOps loop from zero. Everything downstream (image tags, replicas, values) still flows through git only.
 - Branch mapping: dev + staging watch the `dev` branch, prod watches `main`
@@ -254,16 +258,16 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 | Module | Status |
 |---|---|
 | S3 state bucket | done (manual) |
-| VPC (shared + prod) | applied ✓ (shared) |
-| EKS (shared + prod) | **applied ✓ (shared)** — see Troubleshooting for the DNS/security-group bug |
-| Karpenter (shared + prod) | applied ✓ (shared) |
-| NodePools (shared + prod) | **applied ✓ (shared)** — owns EBS CSI Driver addon + `gp3` StorageClass |
-| ECS runner (shared + prod) | written, **deferred on purpose** (`exclude` in terragrunt.hcl) — building last |
-| ingress-nginx (shared) | **applied ✓** |
-| Route53 private zone (shared) | **applied ✓** — `dev`/`staging`/`argocd`.chess.internal all resolve and route correctly |
-| VPN — WireGuard (shared + prod) | **applied ✓ (shared)** |
-| ArgoCD (shared + prod) | **applied ✓ (shared)** — see Troubleshooting for the ApplicationSet/ConfigMap bugs |
-| ESO — External Secrets (shared + prod) | **applied ✓ (shared)** — `ClusterSecretStore` valid, `ExternalSecret`s synced (`ghcr-secret`, `auth-secret`, etc. all `SecretSynced: True`) |
+| VPC (shared + prod) | verified working (shared) — **currently torn down** for cost, code unchanged |
+| EKS (shared + prod) | verified working (shared) — see Troubleshooting for the DNS/security-group bug — **currently torn down** |
+| Karpenter (shared + prod) | verified working (shared) — **currently torn down** |
+| NodePools (shared + prod) | verified working (shared) — owns EBS CSI Driver addon + `gp3` StorageClass — **currently torn down** |
+| ECS runner (shared + prod) | **not built — documented concept only**, deprioritized given the deadline (see Apply order note above) |
+| ingress-nginx (shared + prod) | verified working (shared) — prod unit newly written, not yet applied — **currently torn down** |
+| Route53 private zone (shared + prod) | verified working (shared, `dev`/`staging`/`argocd.chess.internal`) — prod unit (`chess-prod.internal`, argocd-only) newly written, not yet applied — **currently torn down** |
+| VPN — WireGuard (shared + prod) | verified working (shared) — **currently torn down** |
+| ArgoCD (shared + prod) | verified working (shared) — see Troubleshooting for the ApplicationSet/ConfigMap bugs; prod now wired for VPN-only ingress too — **currently torn down** |
+| ESO — External Secrets (shared + prod) | verified working (shared) — `ClusterSecretStore` valid, `ExternalSecret`s synced — **currently torn down** |
 | RDS (prod) | not started — not required by interview task, deferred indefinitely |
 | ElastiCache / Redis (prod) | not started — not required by interview task, deferred indefinitely |
 | ALB Ingress Controller (prod) | not started — **required by interview task**, next up |
@@ -271,9 +275,11 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 | Route53 public zone (prod) | not started |
 | S3 + CloudFront (prod frontend) | not started — not required by interview task |
 
-> **2026-07-02: full shared environment applied cleanly** — all 9 non-deferred units succeeded in one `terragrunt run --all apply`, zero errors. PVCs bound, EBS CSI active, ArgoCD UI reachable over the VPN, ESO syncing real secrets from SSM. The one remaining failure is **application-level, not infrastructure**: `chess-auth-service`/`chess-room-service`/`chess-game-service` pods crash-loop in their `alembic upgrade head` init container with `ModuleNotFoundError: No module named 'MySQLdb'` — the Docker images are missing the `mysqlclient` Python package SQLAlchemy needs for its MySQL driver. Out of scope for this repo — needs a dependency fix in each microservice's own `requirements.txt`/Dockerfile, not in Terraform/Helm/K8s config. Prod environment not yet applied.
+> **2026-07-02: full shared environment applied cleanly, then torn down.** All 9 non-deferred units succeeded in one `terragrunt run --all apply`, zero errors. PVCs bound, EBS CSI active, ArgoCD UI reachable over the VPN, ESO syncing real secrets from SSM, all three chess services healthy after the `mysql+pymysql://` driver fix (see Troubleshooting). Torn down afterward via `terragrunt run --all destroy` to stop billing — see Troubleshooting for the node security-group `DependencyViolation` hit during that teardown. Since then: prod gained its own VPN-only `ingress-nginx`/`route53` for ArgoCD (mirroring shared), and the `vpc_cidr` duplication between `vpc`/`vpn` modules was fixed (see Architectural Decisions → VPN) — neither has been applied yet on either environment, only `validate`d and `plan`ned against mocks. Prod environment not yet applied at all.
 
 ## GitHub Actions CD
+
+**Design concept, not yet built.** Given the deadline, this stayed a documented architecture rather than a near-term deliverable — the actual application CI (build/test/push each microservice's image) already exists independently in each microservice's own repo (GitHub Actions → GHCR), which is what the interview task's CI requirement actually needs. This section describes how *infrastructure* deployment (`terragrunt apply`) would eventually move off a laptop and into CI, not something currently running.
 
 Three-layer deployment model. Each layer is independent — no circular dependencies.
 

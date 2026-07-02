@@ -3,9 +3,13 @@ include "root" {
 }
 
 terraform {
-  source = "../../../modules/eso"
+  source = "../../../modules/ingress-nginx"
 }
 
+# Prod-only use: this ingress-nginx instance exists solely for VPN-only admin
+# traffic (ArgoCD) — the chess services themselves are reached through the
+# public ALB, not this internal NLB. Same module as shared, just a much
+# narrower purpose here.
 dependency "eks" {
   config_path = "../eks"
 
@@ -13,25 +17,8 @@ dependency "eks" {
     cluster_name                       = "mock-cluster"
     cluster_endpoint                   = "https://mock.eks.amazonaws.com"
     cluster_certificate_authority_data = "bW9jaw=="
-    oidc_provider_arn                  = "arn:aws:iam::123456789012:oidc-provider/mock"
   }
-  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy", "import"]
-}
-
-# Ordering-only dependency — see shared/eso/terragrunt.hcl for why: the ESO
-# controller pod needs a real EC2 node (no Fargate profile covers its
-# namespace), so it must apply after nodepools gives Karpenter something to
-# provision from.
-dependency "nodepools" {
-  config_path = "../nodepools"
-
-  # "apply" included too, unlike other dependency blocks in this repo — nodepools
-  # has no real outputs at all (empty outputs.tf), so there's never a "real" value
-  # to resolve even after a successful apply. Safe here specifically because this
-  # dependency exists only for ordering and no input ever reads
-  # dependency.nodepools.outputs.*.
-  mock_outputs                            = {}
-  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy", "apply", "import"]
+  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy"]
 }
 
 generate "helm_provider" {
@@ -52,11 +39,11 @@ provider "helm" {
 EOF
 }
 
-generate "kubectl_provider" {
-  path      = "kubectl_provider.tf"
+generate "kubernetes_provider" {
+  path      = "kubernetes_provider.tf"
   if_exists = "overwrite_terragrunt"
   contents  = <<EOF
-provider "kubectl" {
+provider "kubernetes" {
   host                   = "${dependency.eks.outputs.cluster_endpoint}"
   cluster_ca_certificate = base64decode("${dependency.eks.outputs.cluster_certificate_authority_data}")
   exec {
@@ -66,9 +53,4 @@ provider "kubectl" {
   }
 }
 EOF
-}
-
-inputs = {
-  name              = "chess-prod"
-  oidc_provider_arn = dependency.eks.outputs.oidc_provider_arn
 }

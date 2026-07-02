@@ -17,6 +17,19 @@ dependency "eks" {
   mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy"]
 }
 
+# Ordering-only dependency — same reason as shared/argocd/terragrunt.hcl:
+# argocd's own Ingress resource is validated by ingress-nginx's admission
+# webhook, so ingress-nginx must fully apply first. Its output isn't
+# consumed here; the block itself is what enforces the apply order.
+dependency "ingress_nginx" {
+  config_path = "../ingress-nginx"
+
+  mock_outputs = {
+    load_balancer_hostname = "mock-nlb-1234567890.elb.us-east-1.amazonaws.com"
+  }
+  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy"]
+}
+
 generate "helm_provider" {
   path      = "helm_provider.tf"
   if_exists = "overwrite_terragrunt"
@@ -65,4 +78,10 @@ inputs = {
       self_heal       = false
     }
   ]
+
+  # VPN-only, private — same nginx+Ingress pattern as shared, not the public
+  # ALB. The chess services themselves still go through the ALB; only the
+  # admin-facing ArgoCD UI needs to stay off the public internet.
+  ingress_enabled  = true
+  ingress_hostname = "argocd.chess-prod.internal"
 }

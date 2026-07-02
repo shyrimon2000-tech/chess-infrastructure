@@ -10,6 +10,12 @@ variable "vpc_id" {
 }
 
 variable "load_balancer_hostname" {
-  description = "DNS hostname of the internal ingress-nginx NLB that dev/staging/argocd records point to"
+  description = "DNS hostname of the internal ingress-nginx NLB that each record in var.records points to"
   type        = string
+}
+
+variable "records" {
+  description = "Subdomain names to create as CNAME records in the private zone, each pointing at load_balancer_hostname (e.g. [\"argocd\"] for a zone that only needs to route admin traffic)"
+  type        = list(string)
+  default     = ["dev", "staging", "argocd"]
 }
