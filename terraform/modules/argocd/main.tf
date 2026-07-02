@@ -49,7 +49,20 @@ resource "helm_release" "argocd" {
         # argocd-server's own self-signed TLS would otherwise mismatch nginx's
         # plain-HTTP proxying to the backend. Traffic is already inside the VPN
         # tunnel + private VPC network, so dropping TLS here is fine for this project.
-        name  = "server.insecure"
+        #
+        # Bug fixed 2026-07-02: this was `name = "server.insecure"` before, which
+        # Helm's --set syntax reads as nested server: {insecure: true} — but the
+        # chart actually reads this setting from a *flat* key literally named
+        # "server.insecure" (dot included) under configs.params, which is what
+        # populates the argocd-cmd-params-cm ConfigMap argocd-server reads at
+        # startup (`helm show values argo-cd --version 7.7.11` confirms the real
+        # path). The old key silently set a value nothing reads, while the
+        # ConfigMap stayed at its default `server.insecure: "false"` forever —
+        # first misdiagnosed on shared as a stuck/interrupted helm upgrade
+        # (patched the ConfigMap by hand as a workaround), then reproduced
+        # identically on a completely clean, single-revision prod install,
+        # which is what proved the values path itself was wrong all along.
+        name  = "configs.params.server\\.insecure"
         value = "true"
       },
       {
