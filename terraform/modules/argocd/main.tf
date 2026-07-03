@@ -87,114 +87,42 @@ resource "helm_release" "argocd" {
   )
 }
 
-locals {
-  # Split by sync mode instead of a Go-template {{if}} inside the YAML: a bare,
-  # unquoted `{{- if .automated }}` spanning multiple keys isn't valid standalone
-  # YAML (kubectl_manifest parses yaml_body client-side before ArgoCD ever sees
-  # it, and strict YAML forbids a plain scalar starting with `{`). automated is
-  # already known at terraform-apply-time (var.environments is static), so the
-  # split happens here instead of at ArgoCD's runtime templating.
-  automated_environments = [for env in var.environments : env if env.automated]
-  manual_environments    = [for env in var.environments : env if !env.automated]
-}
-
-resource "kubectl_manifest" "chess_chart_applicationset_automated" {
-  count      = length(local.automated_environments) > 0 ? 1 : 0
+# Root "app of apps" — the only ArgoCD object Terraform still owns directly.
+# It watches a folder of hand-written ApplicationSet YAML in git
+# (helm/git-ops/<instance>/, no Terraform templating involved) and lets
+# ArgoCD's own applicationset-controller take it from there. See
+# helm/git-ops/{shared,prod}/*.yaml for the actual bucket definitions.
+resource "kubectl_manifest" "root_app" {
   depends_on = [helm_release.argocd]
 
   yaml_body = <<-YAML
     apiVersion: argoproj.io/v1alpha1
-    kind: ApplicationSet
+    kind: Application
     metadata:
-      name: chess-chart-automated
+      name: chess-gitops-root
       namespace: argocd
     spec:
-      goTemplate: true
-      goTemplateOptions: ["missingkey=error"]
-      generators:
-        - list:
-            elements:
-    %{~for env in local.automated_environments~}
-            - env: ${env.name}
-              namespace: ${env.namespace}
-              valuesFile: ${env.values_file}
-              targetRevision: ${env.target_revision}
-    %{~endfor~}
-      template:
-        metadata:
-          name: 'chess-chart-{{.env}}'
-        spec:
-          project: default
-          source:
-            repoURL: ${var.repo_url}
-            targetRevision: '{{.targetRevision}}'
-            path: helm/chess-chart
-            helm:
-              valueFiles:
-                - '{{.valuesFile}}'
-          destination:
-            server: https://kubernetes.default.svc
-            namespace: '{{.namespace}}'
-          syncPolicy:
-            # Literal booleans, not `{{ .prune }}` — the ApplicationSet CRD types
-            # this field strictly as boolean, and a Go-template placeholder is
-            # necessarily a string until ArgoCD renders it, which happens *after*
-            # kube-apiserver already rejected the raw object for the type
-            # mismatch. Quoting doesn't help (valid YAML, still a string) and
-            # there's no way to make an unrendered placeholder satisfy a strict
-            # boolean schema. Since these are already known at terraform-apply
-            # time, hardcode them here instead of templating at ArgoCD's
-            # runtime — every environment in this ApplicationSet shares the same
-            # values (only "dev" is automated right now; if a second automated
-            # environment ever needs a *different* prune/selfHeal, it needs its
-            # own ApplicationSet, same pattern as the automated/manual split).
-            automated:
-              prune: ${local.automated_environments[0].prune}
-              selfHeal: ${local.automated_environments[0].self_heal}
-            syncOptions:
-              - CreateNamespace=true
-  YAML
-}
-
-resource "kubectl_manifest" "chess_chart_applicationset_manual" {
-  count      = length(local.manual_environments) > 0 ? 1 : 0
-  depends_on = [helm_release.argocd]
-
-  yaml_body = <<-YAML
-    apiVersion: argoproj.io/v1alpha1
-    kind: ApplicationSet
-    metadata:
-      name: chess-chart-manual
-      namespace: argocd
-    spec:
-      goTemplate: true
-      goTemplateOptions: ["missingkey=error"]
-      generators:
-        - list:
-            elements:
-    %{~for env in local.manual_environments~}
-            - env: ${env.name}
-              namespace: ${env.namespace}
-              valuesFile: ${env.values_file}
-              targetRevision: ${env.target_revision}
-    %{~endfor~}
-      template:
-        metadata:
-          name: 'chess-chart-{{.env}}'
-        spec:
-          project: default
-          source:
-            repoURL: ${var.repo_url}
-            targetRevision: '{{.targetRevision}}'
-            path: helm/chess-chart
-            helm:
-              valueFiles:
-                - '{{.valuesFile}}'
-          destination:
-            server: https://kubernetes.default.svc
-            namespace: '{{.namespace}}'
-          syncPolicy:
-            syncOptions:
-              - CreateNamespace=true
+      project: default
+      source:
+        repoURL: ${var.repo_url}
+        targetRevision: ${var.gitops_target_revision}
+        path: helm/git-ops/${var.gitops_dir}
+        directory:
+          recurse: true
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: argocd
+      syncPolicy:
+        # Auto-sync + prune: this is the infra layer (which buckets exist),
+        # not app deployment content — a new/changed ApplicationSet committed
+        # to git should take effect without a manual `argocd app sync`, same
+        # reasoning as dev's automated bucket. No selfHeal, same as
+        # everywhere else in this project (see dev bucket comment in
+        # helm/git-ops/shared/chess-chart-automated.yaml).
+        automated:
+          prune: true
+          selfHeal: false
+        syncOptions:
+          - CreateNamespace=true
   YAML
 }

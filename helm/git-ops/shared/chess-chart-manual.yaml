@@ -1,0 +1,40 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: chess-chart-manual
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - list:
+        elements:
+        - app: chess-chart
+          env: staging
+          namespace: staging
+          path: helm/chess-chart
+          valuesFile: values-staging.yaml
+          targetRevision: dev
+  template:
+    metadata:
+      name: '{{.app}}-{{.env}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/shyrimon2000-tech/chess-infrastructure.git
+        targetRevision: '{{.targetRevision}}'
+        path: '{{.path}}'
+        helm:
+          valueFiles:
+            - '{{.valuesFile}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{.namespace}}'
+      syncPolicy:
+        # No `automated` block at all — this is the manual bucket. Unlike
+        # prune/selfHeal (booleans that need *some* value either way),
+        # omitting `automated` entirely is what makes sync manual; there's
+        # no "automated: false" — the field's mere presence is what enables
+        # auto-sync.
+        syncOptions:
+          - CreateNamespace=true

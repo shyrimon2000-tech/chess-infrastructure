@@ -15,17 +15,15 @@ variable "repo_url" {
   default     = "https://github.com/shyrimon2000-tech/chess-infrastructure.git"
 }
 
-variable "environments" {
-  description = "Environments this ArgoCD instance deploys chess-chart to — drives the ApplicationSet list generator"
-  type = list(object({
-    name            = string
-    namespace       = string
-    values_file     = string
-    target_revision = string
-    automated       = bool
-    prune           = bool
-    self_heal       = bool
-  }))
+variable "gitops_dir" {
+  description = "Subfolder under helm/git-ops/ this instance's root Application watches (e.g. \"shared\", \"prod\") — contains the hand-written ApplicationSet YAML for this instance's sync-policy buckets."
+  type        = string
+}
+
+variable "gitops_target_revision" {
+  description = "Git branch the root Application (and everything it generates) tracks — dev for shared (dev+staging), main for prod. Matches the per-environment targetRevision already hardcoded inside each bucket's ApplicationSet YAML."
+  type        = string
+  default     = "dev"
 }
 
 variable "ingress_enabled" {
