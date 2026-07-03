@@ -7,6 +7,15 @@ resource "helm_release" "ingress_nginx" {
 
   create_namespace = true
 
+  # Default 300s is too tight: helm_release's wait blocks on both the
+  # controller pod AND the internal NLB getting an address, and on a cold
+  # cluster (Karpenter node cold-start + first-time NLB provisioning) that
+  # combination can genuinely take longer than 5 minutes even with nothing
+  # wrong — confirmed 2026-07-03: pod Ready and NLB EnsuredLoadBalancer both
+  # completed, just a few minutes after Terraform's client-side timeout had
+  # already given up and errored with "context deadline exceeded".
+  timeout = 900
+
   set = [
     {
       name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/aws-load-balancer-type"
