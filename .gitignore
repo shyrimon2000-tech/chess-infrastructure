@@ -5,3 +5,9 @@ k8s/configmaps/
 docker-compose.yml
 nginx.dev.conf
 tests/
+.claude/
+.terraform/
+.terragrunt-cache/
+*.tfstate
+*.tfstate.backup
+crash.log
