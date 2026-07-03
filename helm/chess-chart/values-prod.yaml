@@ -61,7 +61,7 @@ auth:
     enabled: false
     hostPath:
       enabled: false
-    cidr: "10.0.0.0/16"
+    cidr: "192.168.0.0/16"
 
 room:
   hpa:
@@ -71,12 +71,12 @@ room:
   externalSecret:
     remoteRef:
       key: "/chess-prod/room"
-  redisCidr: "10.0.0.0/16"
+  redisCidr: "192.168.0.0/16"
   db:
     enabled: false
     hostPath:
       enabled: false
-    cidr: "10.0.0.0/16"
+    cidr: "192.168.0.0/16"
 
 game:
   hpa:
@@ -86,12 +86,12 @@ game:
   externalSecret:
     remoteRef:
       key: "/chess-prod/game"
-  redisCidr: "10.0.0.0/16"
+  redisCidr: "192.168.0.0/16"
   db:
     enabled: false
     hostPath:
       enabled: false
-    cidr: "10.0.0.0/16"
+    cidr: "192.168.0.0/16"
 
 redis:
   enabled: false
