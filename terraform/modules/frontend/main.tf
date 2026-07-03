@@ -94,6 +94,61 @@ resource "aws_cloudfront_distribution" "frontend" {
     origin_access_control_id = aws_cloudfront_origin_access_control.frontend.id
   }
 
+  # ALB isn't created by Terraform at all — the AWS Load Balancer Controller
+  # (a K8s controller, see alb-controller module) creates it later, on its
+  # own, once chess-chart's Ingress is deployed by ArgoCD. `var.api_origin_hostname`
+  # doesn't resolve to anything yet at the moment this distribution is
+  # created — that's fine, CloudFront only needs an origin's DNS to resolve
+  # when an actual request routes there, not at creation time. ExternalDNS
+  # (separate module) later creates the A record pointing this hostname at
+  # the real ALB, fully automatically, no second `terraform apply` needed.
+  # See README ALB/ExternalDNS section for the full sequencing.
+  origin {
+    domain_name = var.api_origin_hostname
+    origin_id   = "alb-api"
+
+    # TLS for end users terminates here at CloudFront (the cert above
+    # already covers this hostname) — the CloudFront-to-ALB hop stays plain
+    # HTTP over AWS's internal backbone, so the ALB itself never needs its
+    # own ACM certificate or HTTPS listener.
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "http-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+
+    # Proves to the ALB this request specifically came from this
+    # distribution, not just "some CloudFront customer's" — the
+    # aws_security_group.alb prefix-list restriction (terraform/modules/alb-controller)
+    # only narrows traffic to CloudFront's IP range in general, which is
+    # shared across every CloudFront customer, not just this one. Must match
+    # chess-chart's values-prod.yaml ingress.alb.originVerifySecret verbatim
+    # — the ALB drops anything that doesn't carry this exact header value.
+    custom_header {
+      name  = "X-Origin-Verify"
+      value = var.origin_verify_secret
+    }
+  }
+
+  # /api/* → ALB (auth/room/game), everything else → S3 (default behavior
+  # below). CachingDisabled since these are dynamic API responses, not
+  # static assets. AllViewerExceptHostHeader forwards all headers/cookies/
+  # query strings the API needs — but deliberately NOT the original viewer
+  # Host header (chess.alexit.online): the ALB's Ingress host-based listener
+  # rule matches on api_origin_hostname, so CloudFront must send that as the
+  # Host header to the origin, not what the browser actually requested.
+  ordered_cache_behavior {
+    path_pattern             = "/api/*"
+    target_origin_id         = "alb-api"
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods           = ["GET", "HEAD"]
+    compress                 = true
+    cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # AWS managed: CachingDisabled
+    origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AWS managed: AllViewerExceptHostHeader
+  }
+
   default_cache_behavior {
     target_origin_id       = "s3-frontend"
     viewer_protocol_policy = "redirect-to-https"

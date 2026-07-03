@@ -10,6 +10,11 @@ metadata:
   {{- else if .Values.ingress.alb.enabled }}
   {{- toYaml .Values.ingress.alb.annotations | nindent 4 }}
     alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
+    # CloudFront injects this header on the CloudFront→origin leg regardless
+    # of whether the original client request was a WebSocket upgrade — the
+    # browser never sets it, so this doesn't interfere with the WebSocket
+    # handshake at all.
+    alb.ingress.kubernetes.io/conditions.game-service: '[{"field":"http-header","httpHeaderConfig":{"httpHeaderName":"X-Origin-Verify","values":["{{ .Values.ingress.alb.originVerifySecret }}"]}}]'
   {{- end }}
 spec:
   {{- if .Values.ingress.nginx.enabled }}

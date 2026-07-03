@@ -1,12 +1,37 @@
 ingress:
-  host: "chess.yourdomain.com"
+  # NOT the public hostname (chess.alexit.online is CloudFront, in front of
+  # this). This is the internal origin hostname CloudFront's /api/* behavior
+  # forwards to as the Host header — must match terraform/modules/frontend's
+  # api_origin_hostname exactly, or the ALB's host-based listener rule won't
+  # match and every /api/* request 404s at the ALB.
+  host: "api-origin.alexit.online"
   nginx:
     enabled: false
   alb:
     enabled: true
+    # Blank value here is replaced at deploy time — see originVerifySecret
+    # below and helm/chess-chart/README section on this, if you're reading
+    # this before that's written: this is the shared secret both CloudFront
+    # (custom_header on the ALB origin) and the ALB's per-path header
+    # condition check independently. Must match
+    # terraform/modules/frontend's origin_verify_secret exactly.
+    originVerifySecret: "096d4fbd66f78caa511abee115339b1f50d5d84c836e168a10d2e6c82b163ba2"
     annotations:
       alb.ingress.kubernetes.io/scheme: internet-facing
       alb.ingress.kubernetes.io/target-type: ip
+      # Without a shared group.name, main-ingress and game-ingress (two
+      # separate Ingress objects) would each get their own ALB from the
+      # controller — this merges them into one, matching "single ALB" in
+      # CLAUDE.md.
+      alb.ingress.kubernetes.io/group.name: chess-prod
+      # References terraform/modules/alb-controller's aws_security_group.alb
+      # by its Name *tag* (not the raw AWS-generated groupName) — bypasses
+      # the controller's own auto-created (permissive) security group
+      # entirely. manage-backend-security-group-rules keeps the controller
+      # still automatically allowing this custom SG through to the actual
+      # pod/node security groups, same as it would for its own auto-created one.
+      alb.ingress.kubernetes.io/security-groups: chess-prod-alb-cloudfront-only
+      alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
 
 resourcequota:
   hard:
