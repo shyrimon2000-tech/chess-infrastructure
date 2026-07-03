@@ -157,7 +157,8 @@ terraform/
 │   ├── route53/                    # Private hosted zone (chess.internal) — dev/staging/argocd records
 │   ├── vpn/                        # WireGuard (wg-easy + Caddy) — SSM-only EC2, public subnet
 │   ├── argocd/                     # ArgoCD + root app-of-apps Application (GitOps bootstrap)
-│   └── eso/                        # External Secrets Operator + ClusterSecretStore (SSM Parameter Store)
+│   ├── eso/                        # External Secrets Operator + ClusterSecretStore (SSM Parameter Store)
+│   └── frontend/                   # S3 + CloudFront + ACM (prod only, no EKS dependency)
 └── environments/
     ├── shared/                     # dev + staging (one cluster, separate namespaces)
     │   ├── vpc/                    # 10.0.0.0/16
@@ -180,7 +181,8 @@ terraform/
         ├── route53/                # chess-prod.internal private zone, argocd record only
         ├── vpn/                    # vpn-prod.<domain>
         ├── argocd/                 # prod (manual sync), VPN-only ingress
-        └── eso/                    # IRSA scoped to /chess-prod/*
+        ├── eso/                    # IRSA scoped to /chess-prod/*
+        └── frontend/               # chess.alexit.online — no dependency block, applies standalone
 ```
 
 Apply order (Layer 0 — GitHub-hosted runner): `vpc → ecs-runner` — **not built**. `ecs-runner` (`exclude { if = true, actions = ["all"] }`, skipped by `run-all`) exists in this repo as a documented *concept* for the eventual self-hosted-runner CD pipeline (see GitHub Actions CD section), not as a near-term deliverable — deprioritized given the deadline, since nothing in the actual requirements depends on *how* Terraform gets applied, only on the resulting infrastructure state.
@@ -227,8 +229,14 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 - `null_resource.wait_for_node_termination` (destroy-time `local-exec`) polls `aws ec2 describe-instances` for actual node termination instead of trusting a fixed `time_sleep` duration — see **Troubleshooting → "`terragrunt destroy` fails with `DependencyViolation` deleting the node security group"**
 
 **Frontend**
-- Prod: S3 + CloudFront (static assets, no pod in cluster)
+- Prod: S3 + CloudFront (static assets, no pod in cluster) — `terraform/modules/frontend`
 - Dev / Staging: container in EKS (shared cluster)
+- **Fully independent of EKS/VPC** — no `dependency` blocks in `terraform/environments/prod/frontend/terragrunt.hcl` at all. Static hosting doesn't need a cluster, a VPC, or even prod's other units to exist first; it can apply/destroy on its own schedule.
+- **Excluded from `run --all destroy` specifically** (`exclude { if = get_terraform_command() == "destroy", actions = ["all"] }`) — still fully included in `run --all apply`/`plan`. Unlike EKS/EC2/NAT (the actual cost drivers behind tearing `shared`/`prod` down between sessions), S3 + CloudFront cost cents to sit idle, so there's no cost reason to destroy it on the same cycle. It also isn't cheap to *redo* — CloudFront takes 15-30 minutes to propagate a new distribution to edge locations, so destroying and reapplying it on every cost-saving teardown would make `chess.alexit.online` unreachable for that whole window, every single cycle, for no benefit.
+- **S3 is private, CloudFront reads via Origin Access Control (OAC)** — no S3 static website hosting, no public bucket policy. `aws_s3_bucket_public_access_block` blocks all four public-access vectors; the only allowed reader is this exact CloudFront distribution, enforced by an `AWS:SourceArn` condition in the bucket policy (not just "any CloudFront", a specific one). OAC is the current AWS-recommended approach — the older Origin Access Identity (OAI) is legacy.
+- **ACM certificate in us-east-1** — a CloudFront hard requirement regardless of which region the distribution's origin lives in. Not a special case here since this whole project already runs in us-east-1 (see `root.hcl`); a project centered on another region would need a second, aliased `aws` provider just for this one certificate.
+- **SPA routing via `custom_error_response`** — a direct hit on a client-side route (e.g. `/profile/123`) doesn't exist as an S3 object. A private bucket denies unknown keys with `403` (not `404` — it won't reveal whether the key exists at all), so both `403` and `404` are rewritten to `/index.html` with a real `200`, letting React Router take over client-side instead of the browser showing a raw CloudFront error page.
+- **Terraform provisions infrastructure only, never uploads content** — same principle as ArgoCD/GitOps (infra vs. delivery stay separate). No `aws_s3_object` resources tracking build output in state; that would couple this repo to the frontend's build artifacts and cause a Terraform diff on every frontend deploy for content Terraform doesn't actually need to know about. Instead, Terraform writes the bucket name and CloudFront distribution ID to plain-`String` (not `SecureString` — neither is a secret) SSM parameters (`/chess-prod/frontend/s3-bucket`, `/chess-prod/frontend/cloudfront-distribution-id`) that the separate `chess-frontend-service` repo's own CI reads to run `aws s3 sync` + a cache invalidation after each build — works identically whether triggered locally or from a future GitHub Actions runner, without hardcoding either value into that repo. Both params set `overwrite = true` — `aws_ssm_parameter` defaults to `false` on create specifically to avoid clobbering a parameter it doesn't already own, but a stale value left behind by a prior destroy/apply cycle that never made it into *this* state should always just be replaced with what the current apply actually produced (same failure class as the Helm "name still in use" and EKS "addon already exists" bugs — see Troubleshooting — neither of these two params is a secret needing manual bootstrap, so there's nothing worth preserving).
 
 **VPN**
 - WireGuard (wg-easy) + Caddy on a single EC2 instance, SSM-only management (no SSH, no port 22)
@@ -274,7 +282,7 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 | ALB Ingress Controller (prod) | not started — **required by interview task**, next up |
 | ArgoCD RBAC per environment | not started — **required by interview task** |
 | Route53 public zone (prod) | not started |
-| S3 + CloudFront (prod frontend) | not started — not required by interview task |
+| S3 + CloudFront (prod frontend) | module written (`terraform/modules/frontend`), `terragrunt validate` passes — not yet applied |
 
 > **2026-07-02: full shared environment applied cleanly, then torn down.** All 9 non-deferred units succeeded in one `terragrunt run --all apply`, zero errors. PVCs bound, EBS CSI active, ArgoCD UI reachable over the VPN, ESO syncing real secrets from SSM, all three chess services healthy after the `mysql+pymysql://` driver fix (see Troubleshooting). Torn down afterward via `terragrunt run --all destroy` to stop billing — see Troubleshooting for the node security-group `DependencyViolation` hit during that teardown. Since then: prod gained its own VPN-only `ingress-nginx`/`route53` for ArgoCD (mirroring shared), and the `vpc_cidr` duplication between `vpc`/`vpn` modules was fixed (see Architectural Decisions → VPN) — neither has been applied yet on either environment, only `validate`d and `plan`ned against mocks. Prod environment not yet applied at all.
 
@@ -450,6 +458,16 @@ Caddy handles TLS termination automatically via Let's Encrypt. The cluster only 
 **Solution:** moved the EBS CSI Driver addon + its IRSA role from the `eks` module into `nodepools` (`depends_on = [kubectl_manifest.nodepool]`), and added ordering-only terragrunt `dependency` blocks (output deliberately unused — the block's presence alone forces DAG ordering) for `eso → nodepools` and `argocd → ingress-nginx` (same shape of problem, different trigger — an admission webhook, not compute). Once nodes can actually be provisioned before the addon's create call starts, Karpenter picks up the unschedulable pod and provisions a node inside the addon's own timeout window.
 
 **Follow-ons on the same bug:** a stuck `CREATE_FAILED` addon object doesn't get fixed by a Terraform code change alone — `CreateAddon` won't re-apply new parameters (like `resolve_conflicts_on_create = "OVERWRITE"`) to an addon that already exists in some state; needed a one-time manual `aws eks delete-addon` + `aws eks wait addon-deleted` before the corrected config could create it cleanly. Also needed a `gp3` StorageClass added explicitly (`kubectl_manifest.gp3_storage_class` in `nodepools`) — installing the addon only gives you the *provisioner* (`ebs.csi.aws.com`), not any `StorageClass` that uses it, and EKS's shipped default is `gp2`.
+
+**The mechanics of "Karpenter picks up the unschedulable pod" (worth spelling out — it's not obvious which pod does what):** Karpenter only reacts to ordinary `Pending` pods from a `Deployment`/`StatefulSet` (the EBS CSI Driver's *controller*, here) — a `DaemonSet` pod never triggers node provisioning by itself, it just rides along once a matching node already exists for any reason. So the actual sequence on a cold cluster is:
+
+1. EBS CSI Driver controller pod: `Pending` (no node exists at all).
+2. Karpenter sees it, sizes and launches an EC2 instance for it (factoring in expected DaemonSet overhead, but the DaemonSet pods aren't why the node was created).
+3. The node registers, the controller pod gets *scheduled* onto it — but it does **not** immediately go `Running`. It moves to `ContainerCreating` (events show `network not ready` / `cni plugin not initialized`), because CNI hasn't started on this brand-new node yet.
+4. `aws-node` (the VPC CNI `DaemonSet`) independently notices the new node matches its (fixed) affinity and schedules its own pod onto it.
+5. Once `aws-node` initializes and starts handing out pod IPs, **every** pod on that node — including the original EBS CSI controller pod that caused the node to exist in the first place — transitions from `ContainerCreating` to `Running` at the same time, no special ordering for the "triggering" pod.
+
+The self-referential part is the easy bit to miss: the pod that caused the node to be created doesn't get to skip the CNI wait just because it triggered the provisioning — it queues behind CNI exactly like every other pod that happens to land on that node.
 
 ---
 
