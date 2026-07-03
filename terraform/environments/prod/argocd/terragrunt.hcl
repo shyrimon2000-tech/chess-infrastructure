@@ -67,17 +67,10 @@ EOF
 inputs = {
   name = "chess-prod"
 
-  environments = [
-    {
-      name            = "prod"
-      namespace       = "production"
-      values_file     = "values-prod.yaml"
-      target_revision = "main"
-      automated       = false
-      prune           = false
-      self_heal       = false
-    }
-  ]
+  # Root Application watches helm/git-ops/prod/ — a single hand-written
+  # manual-bucket ApplicationSet there (no automated env exists for prod).
+  gitops_dir             = "prod"
+  gitops_target_revision = "main"
 
   # VPN-only, private — same nginx+Ingress pattern as shared, not the public
   # ALB. The chess services themselves still go through the ALB; only the
