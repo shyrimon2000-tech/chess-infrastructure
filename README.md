@@ -267,7 +267,7 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 | ingress-nginx (shared + prod) | verified working (shared) — prod unit newly written, not yet applied — **currently torn down** |
 | Route53 private zone (shared + prod) | verified working (shared, `dev`/`staging`/`argocd.chess.internal`) — prod unit (`chess-prod.internal`, argocd-only) newly written, not yet applied — **currently torn down** |
 | VPN — WireGuard (shared + prod) | verified working (shared) — **currently torn down** |
-| ArgoCD (shared + prod) | Helm install + ingress + `configs.params.server\.insecure` fix **verified end-to-end** (shared 2026-07-02, prod 2026-07-02) — but the app-of-apps/`ApplicationSet` layer was redesigned afterward (root `Application` + hand-written `helm/git-ops/*` buckets, see ArgoCD/GitOps design above) and **not yet applied against a real cluster** — `terragrunt validate` passes on both, real apply still needed to confirm the root app actually syncs the buckets — **currently torn down** |
+| ArgoCD (shared + prod) | Helm install + ingress + `configs.params.server\.insecure` fix **verified end-to-end** (shared 2026-07-02, prod 2026-07-02). App-of-apps redesign (root `Application` + hand-written `helm/git-ops/*` buckets) **verified against a real cluster 2026-07-03**: root app applied and synced both `ApplicationSet` buckets, generating `chess-chart-dev` and `chess-chart-staging` as real `Application` objects visible in the UI — confirms the git-driven topology actually works end-to-end, not just `terragrunt validate` |
 | ESO — External Secrets (shared + prod) | verified working (shared) — `ClusterSecretStore` valid, `ExternalSecret`s synced — **currently torn down** |
 | RDS (prod) | not started — not required by interview task, deferred indefinitely |
 | ElastiCache / Redis (prod) | not started — not required by interview task, deferred indefinitely |
@@ -486,6 +486,18 @@ Caddy handles TLS termination automatically via Let's Encrypt. The cluster only 
 **Solution:** `terraform import <namespace>/<release>` rather than deleting a genuinely healthy release and reinstalling.
 
 **Lesson:** a resource existing, or `helm history` showing `STATUS: deployed`, doesn't guarantee Terraform's state agrees — check the live resource against what you actually expect, not just release/state metadata.
+
+---
+
+#### `helm_release` times out on a cold cluster, then blocks retry with the same "name still in use" symptom
+
+**Symptom:** `terraform apply` on `ingress-nginx` failed with `Error: installation failed ... context deadline exceeded`. Re-running immediately failed differently: `cannot re-use a name that is still in use` — same symptom family as the entry above, but this time on the very first apply attempt against a freshly-created cluster, not after an interrupted process.
+
+**Cause:** `helm_release`'s default `timeout` is 300s, and `wait` (also default `true`) blocks on both the controller pod reaching Ready **and** the Service's LoadBalancer getting an address. `kubectl get events -n ingress-nginx` showed the real timeline: `EnsuredLoadBalancer` fired 2 seconds after the Service was created (NLB provisioning was never the bottleneck) — but the controller pod hit `FailedScheduling: Pod provisioning timed out (will retry)` twice from the Fargate scheduler before finally landing, 7 minutes after creation. A documented, non-error Fargate behavior (it retries provisioning automatically and succeeded on its own) — but 7 minutes exceeds the 5-minute client-side timeout, so Terraform gave up first. That failed `helm install` left the release recorded `STATUS: failed` in-cluster; Terraform's state has no record of it (the resource never finished creating), so the retry attempts a fresh `install` and Helm refuses the name collision — the same downstream symptom as an interrupted-apply orphan, different root cause.
+
+**Solution:** `helm uninstall ingress-nginx -n ingress-nginx` to clear the failed release (state has nothing to `import` here — unlike the entry above, there's no genuinely healthy resource to adopt), then raised `helm_release.timeout` to `900` in `terraform/modules/ingress-nginx/main.tf` to give real headroom for a cold-cluster Fargate retry cycle instead of racing a tight 5-minute default against it.
+
+**Lesson:** confirmed via `git log -p` on every commit touched since the prior successful apply that no code in the create-path (`ingress-nginx`, `karpenter`, `nodepools`) had changed — ruling out a regression before reaching for "AWS was just slow" as the explanation. `kubectl get events --sort-by=.lastTimestamp` gave the actual timeline proving *which* async operation was slow (Fargate pod scheduling, not the NLB) rather than guessing.
 
 ---
 
