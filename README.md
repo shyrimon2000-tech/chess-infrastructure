@@ -110,10 +110,14 @@ Not committed on purpose: it pairs your AWS account ID with a specific IAM usern
 | `/chess-prod/vpn/wg-easy-password-hash` | vpn (wg-easy admin panel login) |
 | `/chess-shared/argocd/admin-password-hash` | argocd (`admin` login for the ArgoCD UI) |
 | `/chess-prod/argocd/admin-password-hash` | argocd (`admin` login for the ArgoCD UI) |
+| `/chess-prod/rds/master-password` | rds (`admin` login for the RDS instance — used by this module's own `mysql` provider to create the three per-service databases/users, and by you directly for manual DB admin access over the VPN) |
+| `/chess-prod/jwt-secret-key` | rds (written into `/chess-prod/auth`'s `JWT_SECRET_KEY`, and re-exposed as an output for the future `elasticache` module to reuse for `/chess-prod/room`/`/chess-prod/game` — all three services must share one signing key) |
 
 Generate a wg-easy password hash with: `docker run ghcr.io/wg-easy/wg-easy wgpw '<password>'`
 
 Generate an ArgoCD admin password hash with: `argocd account bcrypt --password '<password>'` (requires the `argocd` CLI)
+
+The RDS master password and JWT secret don't need any special hashing — plain values, unlike the bcrypt hashes above. Manual creation here isn't about avoiding Terraform state (any resource attribute ends up in state regardless of where its value originated — a `data` source read is no different from a `random_password` in that respect); it's about *source of truth* — these two are credentials you choose/rotate yourself, matching the ArgoCD/wg-easy pattern, rather than Terraform-generated values with no human-readable record outside state.
 
 **Domain you must own:** the `vpn` module assumes a public Route53 hosted zone already exists (`alexit.online` by default, override via `public_domain` input) — it only adds `vpn-shared`/`vpn-prod` A records into it, it does not create the zone itself.
 
@@ -158,7 +162,8 @@ terraform/
 │   ├── vpn/                        # WireGuard (wg-easy + Caddy) — SSM-only EC2, public subnet
 │   ├── argocd/                     # ArgoCD + root app-of-apps Application (GitOps bootstrap)
 │   ├── eso/                        # External Secrets Operator + ClusterSecretStore (SSM Parameter Store)
-│   └── frontend/                   # S3 + CloudFront + ACM (prod only, no EKS dependency)
+│   ├── frontend/                   # S3 + CloudFront + ACM (prod only, no EKS dependency)
+│   └── rds/                        # MySQL 8.0 Multi-AZ, 3 databases + scoped users (prod only)
 └── environments/
     ├── shared/                     # dev + staging (one cluster, separate namespaces)
     │   ├── vpc/                    # 10.0.0.0/16
@@ -182,7 +187,8 @@ terraform/
         ├── vpn/                    # vpn-prod.<domain>
         ├── argocd/                 # prod (manual sync), VPN-only ingress
         ├── eso/                    # IRSA scoped to /chess-prod/*
-        └── frontend/               # chess.alexit.online — no dependency block, applies standalone
+        ├── frontend/               # chess.alexit.online — no dependency block, applies standalone
+        └── rds/                    # depends only on vpc (not eks) — applies in parallel with the cluster
 ```
 
 Apply order (Layer 0 — GitHub-hosted runner): `vpc → ecs-runner` — **not built**. `ecs-runner` (`exclude { if = true, actions = ["all"] }`, skipped by `run-all`) exists in this repo as a documented *concept* for the eventual self-hosted-runner CD pipeline (see GitHub Actions CD section), not as a near-term deliverable — deprioritized given the deadline, since nothing in the actual requirements depends on *how* Terraform gets applied, only on the resulting infrastructure state.
@@ -238,6 +244,16 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 - **SPA routing via `custom_error_response`** — a direct hit on a client-side route (e.g. `/profile/123`) doesn't exist as an S3 object. A private bucket denies unknown keys with `403` (not `404` — it won't reveal whether the key exists at all), so both `403` and `404` are rewritten to `/index.html` with a real `200`, letting React Router take over client-side instead of the browser showing a raw CloudFront error page.
 - **Terraform provisions infrastructure only, never uploads content** — same principle as ArgoCD/GitOps (infra vs. delivery stay separate). No `aws_s3_object` resources tracking build output in state; that would couple this repo to the frontend's build artifacts and cause a Terraform diff on every frontend deploy for content Terraform doesn't actually need to know about. Instead, Terraform writes the bucket name and CloudFront distribution ID to plain-`String` (not `SecureString` — neither is a secret) SSM parameters (`/chess-prod/frontend/s3-bucket`, `/chess-prod/frontend/cloudfront-distribution-id`) that the separate `chess-frontend-service` repo's own CI reads to run `aws s3 sync` + a cache invalidation after each build — works identically whether triggered locally or from a future GitHub Actions runner, without hardcoding either value into that repo. Both params set `overwrite = true` — `aws_ssm_parameter` defaults to `false` on create specifically to avoid clobbering a parameter it doesn't already own, but a stale value left behind by a prior destroy/apply cycle that never made it into *this* state should always just be replaced with what the current apply actually produced (same failure class as the Helm "name still in use" and EKS "addon already exists" bugs — see Troubleshooting — neither of these two params is a secret needing manual bootstrap, so there's nothing worth preserving).
 
+**RDS (prod only — dev/staging keep the in-cluster MySQL StatefulSet)**
+- **One Multi-AZ MySQL 8.0 instance, three logical databases** (`auth_db`, `room_db`, `game_db`) — not three separate RDS instances. Matches the ~$40-50/mo estimate in CLAUDE.md (a single Multi-AZ instance's ballpark, not 3x it) while still respecting "each service owns its own database, no shared database" — the isolation boundary is per-database credentials, not per-instance.
+- **Dedicated MySQL user per database, not one shared master user** — `mysql_user` + `mysql_grant` (`ALL PRIVILEGES`, scoped to exactly one database each) via the `petoju/mysql` provider, not the AWS provider. `ALL PRIVILEGES` and not a narrower DML-only set because alembic's `upgrade head` init container (see Troubleshooting) needs DDL — `CREATE`/`ALTER`/`DROP TABLE` — not just row-level access; the isolation is "which database", not "which SQL statements". A leaked `room_user` credential can't touch `auth_db` or `game_db` at all.
+- **The `mysql` provider needs a live MySQL connection at apply time** — RDS sits in the private database subnets (`publicly_accessible = false`), so this module only applies successfully while connected to prod's VPN (or from inside the VPC, e.g. the future `ecs-runner`) — same operational constraint this project already has for any `kubectl`/`helm` provider call against the EKS API.
+- **Depends only on `vpc`, deliberately not on `eks`** — applies in parallel with the cluster instead of queuing behind it. RDS provisioning (storage allocation, Multi-AZ standby setup, DNS propagation) takes 10-15+ minutes regardless of what else is happening, so by the time `chess-chart` is actually ready to deploy, the database is already up rather than adding its own startup time to the critical path.
+- **Master password and JWT secret are manually created SSM SecureStrings, read via `data`** — same pattern as the ArgoCD admin password hash and wg-easy VPN password (see Prerequisites table), not `random_password`. Reasoning changed from an earlier draft of this module: manual creation doesn't avoid Terraform state (an `aws_db_instance.password` attribute ends up in state regardless of whether its value came from `random_password` or a `data` source — Terraform state doesn't care about provenance), what it actually buys is *source of truth* — you choose and know the master password, so you can connect directly with any MySQL client over the VPN for manual admin access, instead of having to dig a Terraform-generated value out of state. JWT secret is manual for a second reason too: it must be identical across auth/room/game, and `/chess-shared/{auth,room,game}` for dev/staging are *already* fully manual (not Terraform-managed at all) — matching that existing convention rather than introducing a different pattern just for prod.
+- **`/chess-prod/auth` is fully written by this module** (`SecureString`, `overwrite = true`, JSON `{DATABASE_URL, JWT_SECRET_KEY}`) — auth has no Redis dependency, so its secret is complete the moment RDS applies.
+- **`/chess-prod/room` and `/chess-prod/game` are deliberately NOT written here** — only `DATABASE_URL` per service and the shared `JWT_SECRET_KEY` are exposed as (sensitive) Terraform outputs. Writing the full JSON in this module and having a later `elasticache` module overwrite the same SSM parameter would mean two different Terraform states both trying to own one AWS resource — instead, whichever module needs Redis in the mix (`elasticache`, next) reads these outputs via a terragrunt `dependency` block and writes those two parameters itself, as sole owner, combining them with its own `REDIS_URL`. The chess-chart's `ExternalSecret` still only ever reads one `remoteRef.key` per service either way — no Helm chart changes needed for this split.
+- JWT secret is read **once** here (from `/${var.name}/jwt-secret-key`) and shared verbatim across auth/room/game outputs — auth issues tokens, room/game only verify them, so all three must agree on the same signing secret.
+
 **VPN**
 - WireGuard (wg-easy) + Caddy on a single EC2 instance, SSM-only management (no SSH, no port 22)
 - `WG_ALLOWED_IPS` (the split-tunnel CIDR) comes from `dependency.vpc.outputs.cidr`, not a hand-typed literal — `vpc` now exports its own `cidr` output specifically so this can't drift. It used to be duplicated by hand in `vpn/terragrunt.hcl` (`vpc_cidr = "10.0.0.0/16"`) independently of the VPC module's own CIDR (in shared's case, not even set explicitly there — it was the module's default), which the `vpc` module didn't even export as an output at the time. Nothing checked the two matched; they just happened to.
@@ -277,7 +293,7 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 | VPN — WireGuard (shared + prod) | verified working (shared) — **currently torn down** |
 | ArgoCD (shared + prod) | Helm install + ingress + `configs.params.server\.insecure` fix **verified end-to-end** (shared 2026-07-02, prod 2026-07-02). App-of-apps redesign (root `Application` + hand-written `helm/git-ops/*` buckets) **verified against a real cluster 2026-07-03**: root app applied and synced both `ApplicationSet` buckets, generating `chess-chart-dev` and `chess-chart-staging` as real `Application` objects visible in the UI — confirms the git-driven topology actually works end-to-end, not just `terragrunt validate` |
 | ESO — External Secrets (shared + prod) | verified working (shared) — `ClusterSecretStore` valid, `ExternalSecret`s synced — **currently torn down** |
-| RDS (prod) | not started — not required by interview task, deferred indefinitely |
+| RDS (prod) | module written (`terraform/modules/rds`), `terragrunt validate` passes — not yet applied (needs VPN connectivity for the `mysql` provider) |
 | ElastiCache / Redis (prod) | not started — not required by interview task, deferred indefinitely |
 | ALB Ingress Controller (prod) | not started — **required by interview task**, next up |
 | ArgoCD RBAC per environment | not started — **required by interview task** |
