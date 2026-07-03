@@ -163,7 +163,8 @@ terraform/
 │   ├── argocd/                     # ArgoCD + root app-of-apps Application (GitOps bootstrap)
 │   ├── eso/                        # External Secrets Operator + ClusterSecretStore (SSM Parameter Store)
 │   ├── frontend/                   # S3 + CloudFront + ACM (prod only, no EKS dependency)
-│   └── rds/                        # MySQL 8.0 Multi-AZ, 3 databases + scoped users (prod only)
+│   ├── rds/                        # MySQL 8.0 Multi-AZ, 3 databases + scoped users (prod only)
+│   └── elasticache/                # Redis 7.x single-node, shared by room+game (prod only)
 └── environments/
     ├── shared/                     # dev + staging (one cluster, separate namespaces)
     │   ├── vpc/                    # 10.0.0.0/16
@@ -188,7 +189,8 @@ terraform/
         ├── argocd/                 # prod (manual sync), VPN-only ingress
         ├── eso/                    # IRSA scoped to /chess-prod/*
         ├── frontend/               # chess.alexit.online — no dependency block, applies standalone
-        └── rds/                    # depends only on vpc (not eks) — applies in parallel with the cluster
+        ├── rds/                    # depends only on vpc (not eks) — applies in parallel with the cluster
+        └── elasticache/            # depends on vpc + rds — writes /chess-prod/room and /chess-prod/game
 ```
 
 Apply order (Layer 0 — GitHub-hosted runner): `vpc → ecs-runner` — **not built**. `ecs-runner` (`exclude { if = true, actions = ["all"] }`, skipped by `run-all`) exists in this repo as a documented *concept* for the eventual self-hosted-runner CD pipeline (see GitHub Actions CD section), not as a near-term deliverable — deprioritized given the deadline, since nothing in the actual requirements depends on *how* Terraform gets applied, only on the resulting infrastructure state.
@@ -254,6 +256,13 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 - **`/chess-prod/room` and `/chess-prod/game` are deliberately NOT written here** — only `DATABASE_URL` per service and the shared `JWT_SECRET_KEY` are exposed as (sensitive) Terraform outputs. Writing the full JSON in this module and having a later `elasticache` module overwrite the same SSM parameter would mean two different Terraform states both trying to own one AWS resource — instead, whichever module needs Redis in the mix (`elasticache`, next) reads these outputs via a terragrunt `dependency` block and writes those two parameters itself, as sole owner, combining them with its own `REDIS_URL`. The chess-chart's `ExternalSecret` still only ever reads one `remoteRef.key` per service either way — no Helm chart changes needed for this split.
 - JWT secret is read **once** here (from `/${var.name}/jwt-secret-key`) and shared verbatim across auth/room/game outputs — auth issues tokens, room/game only verify them, so all three must agree on the same signing secret.
 
+**ElastiCache / Redis (prod only — dev/staging keep the in-cluster Redis StatefulSet)**
+- **Single-node `aws_elasticache_cluster`, `engine = "redis"`** — no `aws_elasticache_replication_group`, no multi-AZ failover. Room-service can't be on Spot (see Karpenter section), but that's an EC2/Karpenter concern already solved at the node level — this project doesn't additionally need HA at the cache tier for a personal project's traffic. A production team with real availability SLOs would use a replication group instead (multi-AZ, automatic failover, at-rest encryption — none of which `aws_elasticache_cluster` supports on its own).
+- **`engine = "redis"` is the entire "make it act like Redis" configuration** — there's no extra layer or setting beyond picking the engine; ElastiCache for Redis *is* Redis, wire-compatible, not an emulation.
+- **room and game share one `REDIS_URL`, not isolated per-service logical DBs** — Redis here backs cross-service game-state pub/sub (CLAUDE.md), so both services need the same keyspace/channels, not their own private slice (unlike RDS, where per-service isolation was the whole point).
+- **Same private database subnets and VPC-CIDR security-group trust model as `rds`** — reuses `database_subnet_ids`, ingress on 6379 from the whole VPC CIDR (covers EKS pods and a VPN-connected apply client alike).
+- **Depends on both `vpc` and `rds`** (not `eks`) — needs `rds`'s `database_urls`/`jwt_secret_key` outputs (via a terragrunt `dependency` block) to compose the complete `/chess-prod/room` and `/chess-prod/game` secrets, which `rds` deliberately left unwritten. This module is the sole owner of those two SSM parameters — see the `rds` module's Architectural Decisions entry above for why splitting ownership this way avoids two Terraform states fighting over one resource.
+
 **VPN**
 - WireGuard (wg-easy) + Caddy on a single EC2 instance, SSM-only management (no SSH, no port 22)
 - `WG_ALLOWED_IPS` (the split-tunnel CIDR) comes from `dependency.vpc.outputs.cidr`, not a hand-typed literal — `vpc` now exports its own `cidr` output specifically so this can't drift. It used to be duplicated by hand in `vpn/terragrunt.hcl` (`vpc_cidr = "10.0.0.0/16"`) independently of the VPC module's own CIDR (in shared's case, not even set explicitly there — it was the module's default), which the `vpc` module didn't even export as an output at the time. Nothing checked the two matched; they just happened to.
@@ -294,7 +303,7 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 | ArgoCD (shared + prod) | Helm install + ingress + `configs.params.server\.insecure` fix **verified end-to-end** (shared 2026-07-02, prod 2026-07-02). App-of-apps redesign (root `Application` + hand-written `helm/git-ops/*` buckets) **verified against a real cluster 2026-07-03**: root app applied and synced both `ApplicationSet` buckets, generating `chess-chart-dev` and `chess-chart-staging` as real `Application` objects visible in the UI — confirms the git-driven topology actually works end-to-end, not just `terragrunt validate` |
 | ESO — External Secrets (shared + prod) | verified working (shared) — `ClusterSecretStore` valid, `ExternalSecret`s synced — **currently torn down** |
 | RDS (prod) | module written (`terraform/modules/rds`), `terragrunt validate` passes — not yet applied (needs VPN connectivity for the `mysql` provider) |
-| ElastiCache / Redis (prod) | not started — not required by interview task, deferred indefinitely |
+| ElastiCache / Redis (prod) | module written (`terraform/modules/elasticache`), `terragrunt validate` passes — not yet applied |
 | ALB Ingress Controller (prod) | not started — **required by interview task**, next up |
 | ArgoCD RBAC per environment | not started — **required by interview task** |
 | Route53 public zone (prod) | not started |
