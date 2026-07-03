@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: chess-chart-manual
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - list:
+        elements:
+        - app: chess-chart
+          env: prod
+          namespace: production
+          path: helm/chess-chart
+          valuesFile: values-prod.yaml
+          targetRevision: main
+  template:
+    metadata:
+      name: '{{.app}}-{{.env}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/shyrimon2000-tech/chess-infrastructure.git
+        targetRevision: '{{.targetRevision}}'
+        path: '{{.path}}'
+        helm:
+          valueFiles:
+            - '{{.valuesFile}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{.namespace}}'
+      syncPolicy:
+        # No `automated` block — manual bucket, same as shared's
+        # chess-chart-manual.yaml. Prod's only bucket: there's no automated
+        # env in this instance at all (see terraform/environments/prod/argocd,
+        # environments has a single "prod" entry with automated = false).
+        syncOptions:
+          - CreateNamespace=true

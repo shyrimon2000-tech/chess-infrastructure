@@ -14,10 +14,13 @@ This is the infrastructure repository for a chess web application composed of fo
 
 All backend services run on port `8000` and expose a `/health` endpoint used by both readiness and liveness probes.
 
-**Planned additions (not yet present):**
+**Completed layers:**
+- `k8s/` — raw Kubernetes manifests (deployments, statefulsets, secrets, configmaps)
 - `helm/` — Helm charts wrapping the raw manifests
-- `terraform/` — cloud infrastructure provisioning (cluster, DNS, storage)
-- `.github/workflows/` — CD pipeline for automated production deploys
+- `terraform/` — cloud infrastructure provisioning via Terragrunt (VPC + EKS modules, shared/prod environments)
+
+**Planned additions:**
+- `.github/workflows/` — CD pipeline (3-layer architecture, see GitHub Actions section below)
 
 ## Secrets & Config Management
 
@@ -97,6 +100,110 @@ The user is learning infrastructure engineering hands-on. The goal is to build t
 - Ask guiding questions instead of writing solutions unless the user explicitly asks ("покажи", "сгенерируй", "напиши")
 - Explain *why* a pattern exists, not just what it does
 - Point out when something is fine for a personal project but would differ in a production team context
+
+## Terraform / AWS Architecture Decisions
+
+### Environments
+
+| Environment | VPC CIDR | EKS Cluster | Database |
+|-------------|----------|-------------|----------|
+| shared (dev+staging) | 10.0.0.0/16 | chess-shared | MySQL StatefulSet in-cluster on EBS |
+| prod | 192.168.0.0/16 | chess-prod | RDS MySQL Multi-AZ (1-year RI) |
+
+### EKS Compute Strategy
+
+Two-tier compute model:
+
+**Tier 1 — Fargate (system components, no DaemonSets needed):**
+- Karpenter controller
+- ArgoCD
+- Grafana
+
+**Tier 2 — EC2 via Karpenter (app workloads):**
+- All chess microservices
+- Prometheus (on minimum on-demand node — bin-packed with app services)
+- node-exporter DaemonSet (metrics collection — no `/metrics` endpoints on chess services)
+
+Rationale: eliminates the `infra` node group (t3.medium × 3 = ~$90/mo), saving ~$65–75/mo via Fargate for system components.
+
+### Karpenter NodePool
+
+Single `general` NodePool — all chess services bin-packed on the same nodes.
+
+| Environment | Capacity type | Instance families |
+|-------------|--------------|-------------------|
+| shared (dev+staging) | Spot | t3, t3a (medium + large, x86 only) |
+| prod | on-demand | t3, t3a (medium + large, x86 only) |
+
+- ARM instances (t4g) excluded — chess service images are amd64 only
+- Consolidation: `WhenEmptyOrUnderutilized`, consolidateAfter 30s
+- Node limits: 8 CPU / 32Gi memory
+- room-service uses Redis → cannot tolerate Spot interruptions → prod on-demand
+- game-service → prod on-demand. Game state itself is persisted to the DB, so a Spot interruption wouldn't lose data — but the client's reconnect window is a hard 30s timeout: if the pod isn't back up and ready (new node provisioned + scheduled + started + passed readiness) within that window, the player is disconnected and recorded as a loss. A Spot interruption's full notice-to-reschedule cycle can easily exceed 30s, so the risk isn't data loss, it's a real, scored game loss for the player.
+
+### Networking
+
+- **EKS endpoint:** private only (`endpoint_public_access = false`)
+- **Access to cluster:** GitHub Actions self-hosted runner on ECS Fargate in private subnet (see GitHub Actions section)
+- **Node access:** SSM Session Manager — no SSH, no port 22, sessions logged to CloudTrail
+- **NAT Gateway:** single NAT (known SPOF, acceptable for current stage)
+- **Security Groups:** created automatically by `terraform-aws-modules/eks/aws` — no manual SG resources needed
+- **VPC Endpoints:** to evaluate — S3 Gateway (free) reduces NAT traffic for ECR image layers
+
+### Ingress
+
+Single ALB for all services with path-based routing:
+- `/api/auth/*` → auth-service
+- `/api/room/*` → room-service
+- `/api/game/*` → game-service (WebSocket supported natively by ALB)
+- `/` → frontend-service
+
+NLB rejected: 1ms latency difference not meaningful for chess; ALB simplifies routing.
+
+### Monitoring
+
+- **node-exporter DaemonSet** on EC2 nodes — sole metrics source (chess services have no `/metrics` endpoints)
+- **Prometheus** on compute-pool EC2 node with PVC (EBS) for metric retention
+- **Grafana** on Fargate
+
+### Storage
+
+EBS CSI Driver required in both clusters:
+- Dev/Staging: PVC for in-cluster MySQL StatefulSets
+- Prod: PVC for Prometheus and Grafana
+
+### Database
+
+- **Dev/Staging:** MySQL 8.0 StatefulSet in-cluster, 5Gi EBS PVC per service
+- **Prod:** RDS MySQL Multi-AZ, 1-year Reserved Instance (~$40–50/mo)
+- Aurora Serverless v2 rejected for prod: more expensive under predictable steady load
+
+## GitHub Actions CD Architecture
+
+Three-layer deployment model. Each layer is independent — no circular dependencies.
+
+### Layer 0 — Bootstrap (GitHub-hosted runner)
+- **Workflow:** `bootstrap-infrastructure.yml`, trigger: `workflow_dispatch`
+- **Runner:** standard `ubuntu-latest` (GitHub-hosted, public internet)
+- **Auth:** AWS OIDC (no long-lived credentials)
+- **Does:** `terragrunt apply` for VPC + ECS runner infrastructure
+- **Why it can run here:** VPC and ECS don't require access to the EKS API
+
+### Layer 1 — Cluster provisioning (self-hosted Fargate runner)
+- **Workflow:** `deploy-cluster.yml`, trigger: `workflow_dispatch`
+- **Runner:** self-hosted, ECS Fargate task in private subnet (inside VPC)
+- **Does:** `terragrunt apply` for EKS → Karpenter → NodePools → ArgoCD bootstrap
+- **Why it needs VPC:** EKS endpoint is private — `helm` and `kubectl` providers must be in the same VPC
+
+### Layer 2 — Application delivery (ArgoCD)
+- **Trigger:** git push → ArgoCD watches repo
+- **Does:** syncs chess microservices, configs, secrets
+- **Runs on:** ArgoCD pod on Fargate (already inside the cluster)
+
+### Key decisions
+- ECS Fargate runner chosen over WireGuard VPN: runner also solves CI/CD, not just access
+- ECS runner is independent of EKS (no circular dependency)
+- ArgoCD replaces any per-service apply workflow — Terraform only provisions infrastructure
 
 ## AWS Guidance
 

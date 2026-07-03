@@ -1,0 +1,38 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: chess-chart-automated
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - list:
+        elements:
+        - app: chess-chart
+          env: dev
+          namespace: dev
+          path: helm/chess-chart
+          valuesFile: values-dev.yaml
+          targetRevision: dev
+  template:
+    metadata:
+      name: '{{.app}}-{{.env}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/shyrimon2000-tech/chess-infrastructure.git
+        targetRevision: '{{.targetRevision}}'
+        path: '{{.path}}'
+        helm:
+          valueFiles:
+            - '{{.valuesFile}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{.namespace}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: false
+        syncOptions:
+          - CreateNamespace=true
