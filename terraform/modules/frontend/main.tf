@@ -107,27 +107,29 @@ resource "aws_cloudfront_distribution" "frontend" {
     domain_name = var.api_origin_hostname
     origin_id   = "alb-api"
 
-    # TLS for end users terminates here at CloudFront (the cert above
-    # already covers this hostname) — the CloudFront-to-ALB hop stays plain
-    # HTTP over AWS's internal backbone, so the ALB itself never needs its
-    # own ACM certificate or HTTPS listener.
+    # TLS for end users terminates here at CloudFront (the cert above already
+    # covers this hostname) — the CloudFront-to-ALB hop gets its own, separate
+    # re-encrypted TLS session (https-only) rather than plain HTTP. Originally
+    # http-only, relying on the AWS internal backbone alone for
+    # confidentiality — but the old X-Origin-Verify secret header traveled in
+    # that same request, so a readable hop would have leaked the very secret
+    # meant to prove "this is really our CloudFront".
+    #
+    # origin_mtls_config replaces that header entirely: CloudFront presents a
+    # client certificate (terraform/modules/origin-mtls) that the ALB verifies
+    # against its trust store before accepting the connection at all. Proves
+    # "this specific distribution" cryptographically — a forged/leaked header
+    # value could be replayed by anyone; a private key backing a client
+    # certificate can't be.
     custom_origin_config {
       http_port              = 80
       https_port             = 443
-      origin_protocol_policy = "http-only"
+      origin_protocol_policy = "https-only"
       origin_ssl_protocols   = ["TLSv1.2"]
-    }
 
-    # Proves to the ALB this request specifically came from this
-    # distribution, not just "some CloudFront customer's" — the
-    # aws_security_group.alb prefix-list restriction (terraform/modules/alb-controller)
-    # only narrows traffic to CloudFront's IP range in general, which is
-    # shared across every CloudFront customer, not just this one. Must match
-    # chess-chart's values-prod.yaml ingress.alb.originVerifySecret verbatim
-    # — the ALB drops anything that doesn't carry this exact header value.
-    custom_header {
-      name  = "X-Origin-Verify"
-      value = var.origin_verify_secret
+      origin_mtls_config {
+        client_certificate_arn = var.origin_mtls_client_certificate_arn
+      }
     }
   }
 

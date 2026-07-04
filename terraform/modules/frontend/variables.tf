@@ -27,8 +27,7 @@ variable "api_origin_hostname" {
   default     = "api-origin.alexit.online"
 }
 
-variable "origin_verify_secret" {
-  description = "Shared secret CloudFront sends as the X-Origin-Verify header on every request to the ALB origin — the ALB only forwards requests carrying this exact value (see chess-chart's ingress.alb.originVerifySecret, must match verbatim). Distinguishes this specific CloudFront distribution's traffic from any other CloudFront customer's, on top of the security-group IP restriction to CloudFront's origin-facing prefix list alone. Committed in plaintext in both this module's tfvars and values-prod.yaml — acceptable here because this is a public pet-project repo where that's an accepted, documented tradeoff; a private/closed-source repo wouldn't have this exposure at all since repo access is already restricted, and a real production team would likely pull this from a secret store injected at deploy time instead of committing it either way."
+variable "origin_mtls_client_certificate_arn" {
+  description = "ACM ARN of the client certificate CloudFront presents to the ALB for origin mTLS (see terraform/modules/origin-mtls) — replaces the old X-Origin-Verify shared-secret header as proof of \"this specific distribution\"."
   type        = string
-  sensitive   = true
 }

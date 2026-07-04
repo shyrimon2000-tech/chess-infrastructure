@@ -9,13 +9,6 @@ ingress:
     enabled: false
   alb:
     enabled: true
-    # Blank value here is replaced at deploy time — see originVerifySecret
-    # below and helm/chess-chart/README section on this, if you're reading
-    # this before that's written: this is the shared secret both CloudFront
-    # (custom_header on the ALB origin) and the ALB's per-path header
-    # condition check independently. Must match
-    # terraform/modules/frontend's origin_verify_secret exactly.
-    originVerifySecret: "096d4fbd66f78caa511abee115339b1f50d5d84c836e168a10d2e6c82b163ba2"
     annotations:
       alb.ingress.kubernetes.io/scheme: internet-facing
       alb.ingress.kubernetes.io/target-type: ip
@@ -32,6 +25,24 @@ ingress:
       # pod/node security groups, same as it would for its own auto-created one.
       alb.ingress.kubernetes.io/security-groups: chess-prod-alb-cloudfront-only
       alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
+      # HTTPS:443 only — CloudFront's origin config (terraform/modules/frontend)
+      # already went https-only, so there's no HTTP:80 client left to redirect.
+      # certificate-arn and mutual-authentication's trustStore both come from
+      # terraform/modules/origin-mtls (aws_acm_certificate.alb and
+      # aws_lb_trust_store.this) — deliberately not alb-controller, which is
+      # tied to the EKS cluster's lifecycle and gets destroyed/recreated with
+      # it; origin-mtls is excluded from destroy so these ARNs stay stable.
+      # Together these replace the old X-Origin-Verify shared-secret header
+      # entirely: CloudFront and the ALB now authenticate each other via
+      # certificates each side already depends on, instead of a value that
+      # could leak or be replayed. Fill in both ARNs once, after the first
+      # apply of origin-mtls (also readable from SSM:
+      # /chess-prod/origin-mtls/alb-certificate-arn,
+      # /chess-prod/origin-mtls/trust-store-arn) — they won't change again
+      # unless origin-mtls itself is destroyed.
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+      alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:us-east-1:221556121262:certificate/ca1021c5-69cf-42e9-948b-6c99a296f622"
+      alb.ingress.kubernetes.io/mutual-authentication: '[{"port": 443, "mode": "verify", "trustStore": "arn:aws:elasticloadbalancing:us-east-1:221556121262:truststore/chess-prod-origin-mtls/0767d2b5c9aac873", "ignoreClientCertificateExpiry": false}]'
 
 resourcequota:
   hard:

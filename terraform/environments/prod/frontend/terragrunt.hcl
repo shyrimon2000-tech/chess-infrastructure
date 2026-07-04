@@ -19,18 +19,22 @@ terraform {
   source = "../../../modules/frontend"
 }
 
+# Only dependency: origin-mtls's client certificate, which this distribution
+# presents to the ALB. Still no dependency on vpc/eks — frontend hosting
+# (S3 + CloudFront) stays fully independent of the EKS cluster (see
+# CLAUDE.md: "Prod: S3 + CloudFront, no pod in cluster").
+dependency "origin_mtls" {
+  config_path = "../origin-mtls"
+
+  mock_outputs = {
+    client_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/mock"
+  }
+  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy"]
+}
+
 inputs = {
   name      = "chess-prod"
   subdomain = "chess"
 
-  # No dependency blocks — frontend hosting (S3 + CloudFront) is fully
-  # independent of the EKS cluster (see CLAUDE.md: "Prod: S3 + CloudFront,
-  # no pod in cluster"). Can apply/destroy on its own schedule regardless of
-  # whether the rest of prod is up.
-
-  # Must match helm/chess-chart/values-prod.yaml's ingress.alb.originVerifySecret
-  # verbatim — see the frontend module's variable description for why this
-  # is committed in plaintext (public pet-project repo tradeoff, documented
-  # in README ALB/ExternalDNS section).
-  origin_verify_secret = "096d4fbd66f78caa511abee115339b1f50d5d84c836e168a10d2e6c82b163ba2"
+  origin_mtls_client_certificate_arn = dependency.origin_mtls.outputs.client_certificate_arn
 }

@@ -7,12 +7,6 @@ metadata:
   {{- toYaml .Values.ingress.nginx.annotations | nindent 4 }}
   {{- else if .Values.ingress.alb.enabled }}
   {{- toYaml .Values.ingress.alb.annotations | nindent 4 }}
-    # Combined (AND) with each path's own match below — a request hitting
-    # the right path but missing/wrong header matches no rule at all, and
-    # ALB's own default-no-match behavior is a plain 404, not a forward.
-    # No separate deny-all action needed for that reason.
-    alb.ingress.kubernetes.io/conditions.room-service: '[{"field":"http-header","httpHeaderConfig":{"httpHeaderName":"X-Origin-Verify","values":["{{ .Values.ingress.alb.originVerifySecret }}"]}}]'
-    alb.ingress.kubernetes.io/conditions.auth-service: '[{"field":"http-header","httpHeaderConfig":{"httpHeaderName":"X-Origin-Verify","values":["{{ .Values.ingress.alb.originVerifySecret }}"]}}]'
   {{- end }}
 spec:
   {{- if .Values.ingress.nginx.enabled }}
