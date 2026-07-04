@@ -89,6 +89,24 @@ module "eks" {
       ]
       subnet_ids = var.private_subnet_ids
     }
+    # Own namespace + profile each (not kube-system) — same reasoning as
+    # karpenter/argocd/grafana/ingress-nginx above: lightweight controllers
+    # that only watch the K8s API and call out to AWS APIs, no real EC2
+    # node needed. Harmless if unused (shared never runs these — dev/staging
+    # use ingress-nginx internally, no ALB), same as argocd/grafana already
+    # being defined unconditionally in this shared module.
+    aws_load_balancer_controller = {
+      selectors = [
+        { namespace = "aws-load-balancer-controller" }
+      ]
+      subnet_ids = var.private_subnet_ids
+    }
+    external_dns = {
+      selectors = [
+        { namespace = "external-dns" }
+      ]
+      subnet_ids = var.private_subnet_ids
+    }
   }
 
   endpoint_public_access  = true # temporary: still applying from a laptop, not yet through the VPN — flip to false once VPN is actually applied and connected

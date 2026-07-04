@@ -1,5 +1,10 @@
 ingress:
-  host: "chess.yourdomain.com"
+  # NOT the public hostname (chess.alexit.online is CloudFront, in front of
+  # this). This is the internal origin hostname CloudFront's /api/* behavior
+  # forwards to as the Host header — must match terraform/modules/frontend's
+  # api_origin_hostname exactly, or the ALB's host-based listener rule won't
+  # match and every /api/* request 404s at the ALB.
+  host: "api-origin.alexit.online"
   nginx:
     enabled: false
   alb:
@@ -7,6 +12,37 @@ ingress:
     annotations:
       alb.ingress.kubernetes.io/scheme: internet-facing
       alb.ingress.kubernetes.io/target-type: ip
+      # Without a shared group.name, main-ingress and game-ingress (two
+      # separate Ingress objects) would each get their own ALB from the
+      # controller — this merges them into one, matching "single ALB" in
+      # CLAUDE.md.
+      alb.ingress.kubernetes.io/group.name: chess-prod
+      # References terraform/modules/alb-controller's aws_security_group.alb
+      # by its Name *tag* (not the raw AWS-generated groupName) — bypasses
+      # the controller's own auto-created (permissive) security group
+      # entirely. manage-backend-security-group-rules keeps the controller
+      # still automatically allowing this custom SG through to the actual
+      # pod/node security groups, same as it would for its own auto-created one.
+      alb.ingress.kubernetes.io/security-groups: chess-prod-alb-cloudfront-only
+      alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
+      # HTTPS:443 only — CloudFront's origin config (terraform/modules/frontend)
+      # already went https-only, so there's no HTTP:80 client left to redirect.
+      # certificate-arn and mutual-authentication's trustStore both come from
+      # terraform/modules/origin-mtls (aws_acm_certificate.alb and
+      # aws_lb_trust_store.this) — deliberately not alb-controller, which is
+      # tied to the EKS cluster's lifecycle and gets destroyed/recreated with
+      # it; origin-mtls is excluded from destroy so these ARNs stay stable.
+      # Together these replace the old X-Origin-Verify shared-secret header
+      # entirely: CloudFront and the ALB now authenticate each other via
+      # certificates each side already depends on, instead of a value that
+      # could leak or be replayed. Fill in both ARNs once, after the first
+      # apply of origin-mtls (also readable from SSM:
+      # /chess-prod/origin-mtls/alb-certificate-arn,
+      # /chess-prod/origin-mtls/trust-store-arn) — they won't change again
+      # unless origin-mtls itself is destroyed.
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+      alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:us-east-1:221556121262:certificate/ca1021c5-69cf-42e9-948b-6c99a296f622"
+      alb.ingress.kubernetes.io/mutual-authentication: '[{"port": 443, "mode": "verify", "trustStore": "arn:aws:elasticloadbalancing:us-east-1:221556121262:truststore/chess-prod-origin-mtls/0767d2b5c9aac873", "ignoreClientCertificateExpiry": false}]'
 
 resourcequota:
   hard:
@@ -36,7 +72,7 @@ auth:
     enabled: false
     hostPath:
       enabled: false
-    cidr: "10.0.0.0/16"
+    cidr: "192.168.0.0/16"
 
 room:
   hpa:
@@ -46,12 +82,12 @@ room:
   externalSecret:
     remoteRef:
       key: "/chess-prod/room"
-  redisCidr: "10.0.0.0/16"
+  redisCidr: "192.168.0.0/16"
   db:
     enabled: false
     hostPath:
       enabled: false
-    cidr: "10.0.0.0/16"
+    cidr: "192.168.0.0/16"
 
 game:
   hpa:
@@ -61,12 +97,12 @@ game:
   externalSecret:
     remoteRef:
       key: "/chess-prod/game"
-  redisCidr: "10.0.0.0/16"
+  redisCidr: "192.168.0.0/16"
   db:
     enabled: false
     hostPath:
       enabled: false
-    cidr: "10.0.0.0/16"
+    cidr: "192.168.0.0/16"
 
 redis:
   enabled: false
