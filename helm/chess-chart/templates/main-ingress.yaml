@@ -20,6 +20,7 @@ spec:
     {{- end }}
     http:
       paths:
+      {{- if .Values.ingress.nginx.enabled }}
       - path: /api/rooms/(rooms.*)
         pathType: ImplementationSpecific
         backend:
@@ -34,6 +35,26 @@ spec:
             name: auth-service
             port:
               number: 8000
+      {{- else if .Values.ingress.alb.enabled }}
+      # CloudFront's strip_api_prefix function (terraform/modules/frontend)
+      # already removes the /api prefix before this reaches the ALB, so these
+      # are plain prefix matches on the paths auth/room-service actually
+      # expect — no regex, ALB path-pattern conditions don't support it.
+      - path: /rooms
+        pathType: Prefix
+        backend:
+          service:
+            name: room-service
+            port:
+              number: 8000
+      - path: /auth
+        pathType: Prefix
+        backend:
+          service:
+            name: auth-service
+            port:
+              number: 8000
+      {{- end }}
       {{- if .Values.frontend.enabled }}
       - path: /(.*)
         pathType: ImplementationSpecific
