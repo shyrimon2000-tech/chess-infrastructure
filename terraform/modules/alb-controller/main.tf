@@ -65,9 +65,14 @@ resource "aws_security_group" "alb" {
   vpc_id      = var.vpc_id
 
   ingress {
-    description     = "HTTP from CloudFront only"
-    from_port       = 80
-    to_port         = 80
+    # HTTPS only — the ALB's listener is 443-only (see chess-chart's
+    # values-prod.yaml listen-ports annotation, changed alongside CloudFront's
+    # origin switching to https-only/origin mTLS). Was port 80 before that
+    # switch; left at 80 here would silently firewall off the only port the
+    # ALB actually listens on.
+    description     = "HTTPS from CloudFront only"
+    from_port       = 443
+    to_port         = 443
     protocol        = "tcp"
     prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront.id]
   }
@@ -124,6 +129,22 @@ resource "helm_release" "this" {
     {
       name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
       value = aws_iam_role.this.arn
+    },
+    {
+      # This project only uses the controller for Ingress -> ALB (path-based
+      # routing, see README). The Service -> NLB flow this webhook exists for
+      # requires the newer `aws-load-balancer-type: external` annotation,
+      # which nothing here uses (ingress-nginx's NLB uses the legacy `nlb`
+      # annotation, reconciled by EKS's built-in cloud provider, not by this
+      # controller). Left enabled, the webhook still registers to intercept
+      # every Service create/update cluster-wide (no objectSelector), so any
+      # other Helm chart creating a Service (karpenter, ingress-nginx) that
+      # lands in the same terragrunt run-all wave as this controller races
+      # its still-starting pod and fails admission ("no endpoints
+      # available"). Disabling it removes that unrelated interception
+      # entirely; Ingress admission (mingress.elbv2.k8s.aws) is untouched.
+      name  = "enableServiceMutatorWebhook"
+      value = "false"
     }
   ]
 }

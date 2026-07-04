@@ -6,11 +6,6 @@ terraform {
   source = "../../../modules/rds"
 }
 
-# Only depends on vpc — deliberately no dependency on eks. RDS provisioning
-# (allocate storage, Multi-AZ standby, DNS) takes 10-15+ minutes regardless
-# of the cluster, so applying it in parallel with eks/karpenter/nodepools
-# means the database is already up and ready by the time chess-chart
-# actually gets deployed, instead of queuing behind the cluster first.
 dependency "vpc" {
   config_path = "../vpc"
 
@@ -20,6 +15,28 @@ dependency "vpc" {
     database_subnet_ids = ["subnet-mockdb1", "subnet-mockdb2", "subnet-mockdb3"]
   }
   mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy"]
+}
+
+# Ordering-only dependency — this unit's mysql_database/mysql_user/mysql_grant
+# resources (provider "mysql") need a live TCP:3306 connection to the private
+# RDS instance, reachable only through the VPN, on *both* apply and destroy.
+# Without this edge, `terragrunt run --all destroy` has no reason to keep vpn
+# alive until rds finishes: it could tear vpn down first (or in parallel),
+# stranding these resources with no path to reach RDS to drop them. Terragrunt
+# destroys in reverse dependency order, so this makes rds (and elasticache,
+# which already depends on rds) destroy *before* vpn, not after — vpn stays up
+# exactly as long as it's needed. No output is ever read from this dependency.
+#
+# Trade-off: vpn itself depends on eks (needs cluster_name), so this makes rds
+# transitively depend on eks too — rds's apply can no longer run fully
+# parallel with eks/karpenter/nodepools (RDS's own 10-15+ min provisioning
+# used to overlap with cluster bring-up). Correctness on destroy was judged
+# more important than apply-time parallelism here.
+dependency "vpn" {
+  config_path = "../vpn"
+
+  mock_outputs                            = {}
+  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy", "apply"]
 }
 
 inputs = {
