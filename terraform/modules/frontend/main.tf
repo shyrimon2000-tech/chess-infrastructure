@@ -82,6 +82,21 @@ resource "aws_cloudfront_origin_access_control" "frontend" {
   signing_protocol                  = "sigv4"
 }
 
+# ALB path-pattern conditions only accept literal characters plus `*`/`?`
+# wildcards, not regex — so unlike ingress-nginx (which strips the `/api`
+# prefix itself via a regex rewrite-target), the ALB Ingress Controller has no
+# way to strip it before forwarding. Doing the strip here, at the edge, means
+# auth/room/game keep receiving the same unprefixed paths they already get in
+# dev/staging (`/auth/...`, `/rooms/...`, `/game/...`) — no backend changes,
+# and the ALB's own Ingress rules can stay plain prefix matches.
+resource "aws_cloudfront_function" "strip_api_prefix" {
+  name    = "${var.name}-strip-api-prefix"
+  runtime = "cloudfront-js-2.0"
+  comment = "Strips the /api prefix before forwarding to the ALB origin"
+  publish = true
+  code    = file("${path.module}/functions/strip-api-prefix.js")
+}
+
 resource "aws_cloudfront_distribution" "frontend" {
   enabled             = true
   default_root_object = "index.html"
@@ -149,6 +164,11 @@ resource "aws_cloudfront_distribution" "frontend" {
     compress                 = true
     cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # AWS managed: CachingDisabled
     origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AWS managed: AllViewerExceptHostHeader
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.strip_api_prefix.arn
+    }
   }
 
   default_cache_behavior {

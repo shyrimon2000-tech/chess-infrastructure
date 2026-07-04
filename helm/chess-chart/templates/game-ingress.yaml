@@ -23,6 +23,7 @@ spec:
     {{- end }}
     http:
       paths:
+      {{- if .Values.ingress.nginx.enabled }}
       - path: /api/game/(.*)
         pathType: ImplementationSpecific
         backend:
@@ -30,3 +31,15 @@ spec:
             name: game-service
             port:
               number: 8000
+      {{- else if .Values.ingress.alb.enabled }}
+      # CloudFront's strip_api_prefix function (terraform/modules/frontend)
+      # already removes the /api prefix before this reaches the ALB — see
+      # main-ingress.yaml for the full reasoning.
+      - path: /game
+        pathType: Prefix
+        backend:
+          service:
+            name: game-service
+            port:
+              number: 8000
+      {{- end }}
