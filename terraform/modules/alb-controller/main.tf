@@ -64,29 +64,21 @@ resource "aws_security_group" "alb" {
   name_prefix = "${var.name}-alb-"
   vpc_id      = var.vpc_id
 
+  # Single rule covering both listeners (443: main API, mTLS; 8443: game's
+  # WebSocket, no mTLS - see README Troubleshooting) rather than two
+  # separate ingress blocks. AWS counts a security-group rule referencing a
+  # managed prefix list as one "slot" per entry *in that list*, not one
+  # slot per rule - found live: the CloudFront prefix list currently has 45
+  # entries, so two separate rules referencing it would cost 90 of this
+  # account's 60-rule-per-SG quota (RulesPerSecurityGroupLimitExceeded) even
+  # though only two literal ingress blocks were declared. One rule spanning
+  # the port range keeps the prefix list "charged" only once (~45 slots).
+  # Ports 444-8442 are incidentally allowed too, but nothing listens there -
+  # the ALB itself only has listeners on 443 and 8443, so this is no wider
+  # in practice than two separate, more precisely-scoped rules would be.
   ingress {
-    # HTTPS only — the ALB's listener is 443-only (see chess-chart's
-    # values-prod.yaml listen-ports annotation, changed alongside CloudFront's
-    # origin switching to https-only/origin mTLS). Was port 80 before that
-    # switch; left at 80 here would silently firewall off the only port the
-    # ALB actually listens on.
-    description     = "HTTPS from CloudFront only"
+    description     = "HTTPS (443) + WebSocket (8443) from CloudFront only"
     from_port       = 443
-    to_port         = 443
-    protocol        = "tcp"
-    prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront.id]
-  }
-
-  # Second listener, no mutual-authentication - CloudFront doesn't support
-  # WebSocket through an origin with origin mTLS enabled (AWS-documented
-  # limitation, found live - see README Troubleshooting). game-service's
-  # /ws/games path gets its own ALB listener on this port instead, still
-  # restricted to CloudFront's IP range same as the main listener - just
-  # without the client-certificate requirement, which CloudFront can't
-  # satisfy for a WebSocket upgrade anyway.
-  ingress {
-    description     = "WebSocket (mTLS-incompatible) from CloudFront only"
-    from_port       = 8443
     to_port         = 8443
     protocol        = "tcp"
     prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront.id]

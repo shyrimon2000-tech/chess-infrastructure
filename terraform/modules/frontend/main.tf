@@ -149,12 +149,14 @@ resource "aws_cloudfront_distribution" "frontend" {
       # long-idle WebSocket game sessions specifically in prod (never in
       # dev/staging, which has no CloudFront in the path at all) - a player
       # just thinking for 30+ seconds without sending a move was enough.
-      # 180s is the max CloudFront allows without an AWS support quota
-      # increase; a real game move can still take longer than that with no
-      # app-level ping/keepalive frame in between, so this raises the
-      # ceiling substantially but isn't a complete fix on its own - see
-      # README Troubleshooting.
-      origin_read_timeout       = 180
+      # 60s is the actual self-service ceiling for this account, found live -
+      # an earlier value of 180 (docs suggested that's allowed without a
+      # support request) failed apply with InvalidOriginReadTimeout. Going
+      # higher needs an AWS Support quota increase request, not just a
+      # Terraform change. A real game move can still take longer than 60s
+      # with no app-level ping/keepalive frame in between, so this helps but
+      # isn't a complete fix on its own - see README Troubleshooting.
+      origin_read_timeout       = 60
       origin_keepalive_timeout  = 60
 
       origin_mtls_config {
