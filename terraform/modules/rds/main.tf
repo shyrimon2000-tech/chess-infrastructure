@@ -20,11 +20,12 @@ resource "aws_security_group" "rds" {
   name_prefix = "${var.name}-rds-"
   vpc_id      = var.vpc_id
 
-  # VPC CIDR, not a specific security-group reference — covers both EKS pods
-  # (wherever Karpenter happens to place them) and a VPN-connected Terraform
-  # apply client (split-tunnel routes the VPC CIDR through the tunnel, so a
-  # connected laptop looks like a VPC-internal address). Same trust model as
-  # the chess-chart NetworkPolicy's prod `db.cidr` egress rule — see README.
+  # VPC CIDR, not a specific security-group reference — covers EKS pods
+  # (wherever Karpenter happens to place them, including the chess-chart
+  # bootstrap Job below) and a VPN-connected client doing manual admin access
+  # (split-tunnel routes the VPC CIDR through the tunnel, so a connected
+  # laptop looks like a VPC-internal address). Same trust model as the
+  # chess-chart NetworkPolicy's prod `db.cidr` egress rule — see README.
   ingress {
     description = "MySQL from anywhere inside the VPC"
     from_port   = 3306
@@ -78,8 +79,8 @@ resource "aws_db_instance" "this" {
   publicly_accessible    = false
 
   # Master user is for admin access (you set this password yourself, you
-  # know it, connect with any MySQL client once on the VPN) and for this
-  # module's own `mysql` provider below to create the three per-service
+  # know it, connect with any MySQL client once on the VPN) and for the
+  # chess-chart bootstrap Job (see below) to create the three per-service
   # databases/users — application pods never see or use these credentials,
   # they get their own dedicated per-database user via DATABASE_URL (see
   # locals.db_urls).
@@ -98,47 +99,25 @@ resource "aws_db_instance" "this" {
   backup_retention_period = 1
 }
 
-# ── Per-service databases + dedicated, scoped MySQL users ─────────────────────
-# Connects over the real MySQL wire protocol — only reachable from inside the
-# VPC (RDS is in private database subnets, publicly_accessible = false), so
-# `terraform apply` for this module only succeeds while connected to prod's
-# VPN (or from inside the VPC, e.g. the future ecs-runner) — same operational
-# constraint as any `kubectl`/`helm` provider call against the EKS API.
-
-provider "mysql" {
-  endpoint = aws_db_instance.this.endpoint
-  username = aws_db_instance.this.username
-  password = data.aws_ssm_parameter.master_password.value
-}
-
-resource "mysql_database" "this" {
-  for_each = toset(var.services)
-  name     = "${each.value}_db"
-}
+# ── Per-service database/user credentials ──────────────────────────────────────
+# Terraform only *decides* the desired database/user/password per service
+# (random_password + naming convention, local.db_urls below) and publishes
+# that decision to SSM (auth_secret below; room/game via the elasticache
+# module) — it never connects to MySQL itself to realize it. Actually
+# creating the database/user/grant against the live instance is done by a
+# Helm post-install/post-upgrade hook Job in chess-chart (runs inside the
+# cluster, already has network access to RDS - same VPC-CIDR security group
+# rule above), which parses the same DATABASE_URL values already published
+# here (plus the master password above) via the existing ESO
+# ClusterSecretStore - no separate SSM parameter needed for this. See README
+# Troubleshooting for why this replaced the old `mysql` Terraform provider
+# approach (that required a live TCP:3306 connection - VPN or in-cluster - at
+# `terraform apply`/`destroy` time).
 
 resource "random_password" "db_user" {
   for_each = toset(var.services)
   length   = 32
   special  = false
-}
-
-resource "mysql_user" "this" {
-  for_each           = toset(var.services)
-  user               = "${each.value}_user"
-  host               = "%"
-  plaintext_password = random_password.db_user[each.value].result
-}
-
-# Full privileges, but scoped to exactly one database each — the isolation
-# boundary is "which database", not "which SQL statements": alembic's
-# `upgrade head` (see README Troubleshooting) needs DDL (CREATE/ALTER/DROP
-# TABLE), not just DML, so a narrower privilege set would break migrations.
-resource "mysql_grant" "this" {
-  for_each   = toset(var.services)
-  user       = mysql_user.this[each.value].user
-  host       = mysql_user.this[each.value].host
-  database   = mysql_database.this[each.value].name
-  privileges = ["ALL PRIVILEGES"]
 }
 
 # ── SSM — auth's secret is complete right now (no Redis dependency) ───────────
