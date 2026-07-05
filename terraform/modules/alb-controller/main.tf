@@ -77,6 +77,21 @@ resource "aws_security_group" "alb" {
     prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront.id]
   }
 
+  # Second listener, no mutual-authentication - CloudFront doesn't support
+  # WebSocket through an origin with origin mTLS enabled (AWS-documented
+  # limitation, found live - see README Troubleshooting). game-service's
+  # /ws/games path gets its own ALB listener on this port instead, still
+  # restricted to CloudFront's IP range same as the main listener - just
+  # without the client-certificate requirement, which CloudFront can't
+  # satisfy for a WebSocket upgrade anyway.
+  ingress {
+    description     = "WebSocket (mTLS-incompatible) from CloudFront only"
+    from_port       = 8443
+    to_port         = 8443
+    protocol        = "tcp"
+    prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront.id]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
