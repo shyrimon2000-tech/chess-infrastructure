@@ -142,9 +142,64 @@ resource "aws_cloudfront_distribution" "frontend" {
       origin_protocol_policy = "https-only"
       origin_ssl_protocols   = ["TLSv1.2"]
 
+      # CloudFront's own origin-connection timeouts, independent of the ALB's
+      # idle_timeout (3600s, game-ingress.yaml) and nginx's proxy-read/send-
+      # timeout (3600s, dev/staging) - neither of those covers this hop at
+      # all. Defaults are 30s response / 5s keep-alive, which silently killed
+      # long-idle WebSocket game sessions specifically in prod (never in
+      # dev/staging, which has no CloudFront in the path at all) - a player
+      # just thinking for 30+ seconds without sending a move was enough.
+      # 180s is the max CloudFront allows without an AWS support quota
+      # increase; a real game move can still take longer than that with no
+      # app-level ping/keepalive frame in between, so this raises the
+      # ceiling substantially but isn't a complete fix on its own - see
+      # README Troubleshooting.
+      origin_read_timeout       = 180
+      origin_keepalive_timeout  = 60
+
       origin_mtls_config {
         client_certificate_arn = var.origin_mtls_client_certificate_arn
       }
+    }
+  }
+
+  # Second ALB origin, same hostname/ALB, different port (8443) and
+  # deliberately NO origin_mtls_config - CloudFront does not support
+  # WebSocket for an origin with origin mTLS enabled (AWS-documented
+  # limitation, found live - see README Troubleshooting). game-service's
+  # /ws/games path routes here instead; everything else keeps going through
+  # "alb-api" above with mTLS intact.
+  origin {
+    domain_name = var.api_origin_hostname
+    origin_id   = "alb-game-ws"
+
+    custom_origin_config {
+      http_port                = 80
+      https_port                = 8443
+      origin_protocol_policy    = "https-only"
+      origin_ssl_protocols      = ["TLSv1.2"]
+      origin_read_timeout       = 180
+      origin_keepalive_timeout  = 60
+    }
+  }
+
+  # /api/game/ws/* → the mTLS-free ALB listener above. Must come before the
+  # general /api/* behavior below (ordered_cache_behavior list order decides
+  # precedence - first match wins), since /api/game/ws/games/1 would
+  # otherwise also match the broader /api/* pattern first.
+  ordered_cache_behavior {
+    path_pattern             = "/api/game/ws/*"
+    target_origin_id         = "alb-game-ws"
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD"]
+    cached_methods           = ["GET", "HEAD"]
+    compress                 = false # avoid interfering with the WebSocket upgrade response
+    cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # AWS managed: CachingDisabled
+    origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AWS managed: AllViewerExceptHostHeader
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.strip_api_prefix.arn
     }
   }
 

@@ -43,6 +43,23 @@ ingress:
       alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
       alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:us-east-1:221556121262:certificate/ca1021c5-69cf-42e9-948b-6c99a296f622"
       alb.ingress.kubernetes.io/mutual-authentication: '[{"port": 443, "mode": "verify", "trustStore": "arn:aws:elasticloadbalancing:us-east-1:221556121262:truststore/chess-prod-origin-mtls/0767d2b5c9aac873", "ignoreClientCertificateExpiry": false}]'
+    # Separate listener (8443), same ALB (same group.name/security-groups,
+    # merged in) and same server certificate as above - just no
+    # mutual-authentication annotation, since CloudFront can't present a
+    # client certificate for a WebSocket upgrade at all (AWS-documented
+    # limitation - see README Troubleshooting). Network-layer restriction
+    # (security-groups, same CloudFront-only prefix list) and the WS
+    # handshake's own JWT check still apply; only the client-certificate
+    # requirement is dropped for this one listener.
+    wsAnnotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/group.name: chess-prod
+      alb.ingress.kubernetes.io/security-groups: chess-prod-alb-cloudfront-only
+      alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 8443}]'
+      alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:us-east-1:221556121262:certificate/ca1021c5-69cf-42e9-948b-6c99a296f622"
+      alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
 
 # Sized for auth/room/game at HPA maxReplicas simultaneously (2050m/2432Mi
 # request, 4450m/4864Mi limit worst-case) plus the rds-bootstrap Job's own
