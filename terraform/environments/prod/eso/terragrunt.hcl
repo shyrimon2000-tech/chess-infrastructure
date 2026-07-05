@@ -18,22 +18,6 @@ dependency "eks" {
   mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy", "import"]
 }
 
-# Ordering-only dependency — see shared/eso/terragrunt.hcl for why: the ESO
-# controller pod needs a real EC2 node (no Fargate profile covers its
-# namespace), so it must apply after nodepools gives Karpenter something to
-# provision from.
-dependency "nodepools" {
-  config_path = "../nodepools"
-
-  # "apply" included too, unlike other dependency blocks in this repo — nodepools
-  # has no real outputs at all (empty outputs.tf), so there's never a "real" value
-  # to resolve even after a successful apply. Safe here specifically because this
-  # dependency exists only for ordering and no input ever reads
-  # dependency.nodepools.outputs.*.
-  mock_outputs                            = {}
-  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy", "apply", "import"]
-}
-
 generate "helm_provider" {
   path      = "helm_provider.tf"
   if_exists = "overwrite_terragrunt"
