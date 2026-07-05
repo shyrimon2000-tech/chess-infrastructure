@@ -31,6 +31,11 @@ ingress:
     annotations:
       alb.ingress.kubernetes.io/scheme: internet-facing
       alb.ingress.kubernetes.io/target-type: ip
+    # Separate ALB listener for game's /ws/games path, deliberately without
+    # mutual-authentication - CloudFront can't do WebSocket through an
+    # origin with origin mTLS enabled (AWS-documented limitation, found
+    # live in prod). See README Troubleshooting and game-ws-ingress.yaml.
+    wsAnnotations: {}
 
 resourcequota:
   hard:

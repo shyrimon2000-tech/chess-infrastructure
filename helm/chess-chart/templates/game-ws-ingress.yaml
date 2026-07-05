@@ -1,0 +1,34 @@
+{{- if .Values.ingress.alb.enabled }}
+# Separate Ingress object, not just a separate path on game-ingress.yaml -
+# an ALB listener's mutual-authentication setting applies to the whole
+# listener, not per-path, so the only way to have "/games" require mTLS and
+# "/ws/games" not requires two distinct listeners (443 vs 8443), which in
+# turn requires two distinct Ingress objects (AWS Load Balancer Controller
+# scopes each Ingress object's rules to whichever listen-ports that object
+# itself declares, even when merged into one ALB via group.name). Only
+# rendered for ALB (prod) - nginx (dev/staging) has no such restriction,
+# game-ingress.yaml's single regex path already covers both HTTP and
+# WebSocket there. See README Troubleshooting for the underlying
+# CloudFront + origin mTLS + WebSocket incompatibility this works around.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: game-ws-ingress
+  annotations:
+  {{- toYaml .Values.ingress.alb.wsAnnotations | nindent 4 }}
+spec:
+  ingressClassName: alb
+  rules:
+  - {{- if .Values.ingress.host }}
+    host: {{ .Values.ingress.host }}
+    {{- end }}
+    http:
+      paths:
+      - path: /ws/games
+        pathType: Prefix
+        backend:
+          service:
+            name: game-service
+            port:
+              number: 8000
+{{- end }}
