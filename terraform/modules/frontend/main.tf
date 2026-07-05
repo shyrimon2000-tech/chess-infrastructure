@@ -145,20 +145,17 @@ resource "aws_cloudfront_distribution" "frontend" {
       # CloudFront's own origin-connection timeouts, independent of the ALB's
       # idle_timeout (3600s, game-ingress.yaml) and nginx's proxy-read/send-
       # timeout (3600s, dev/staging) - neither of those covers this hop at
-      # all. Defaults are 30s response / 5s keep-alive, which silently killed
-      # long-idle WebSocket game sessions specifically in prod (never in
-      # dev/staging, which has no CloudFront in the path at all) - a player
-      # just thinking for 30+ seconds without sending a move was enough.
-      # 60s is the actual self-service ceiling for this account, found live -
-      # an earlier value of 180 (docs suggested that's allowed without a
-      # support request) failed apply with InvalidOriginReadTimeout. Going
-      # higher needs an AWS Support quota increase request, not just a
-      # Terraform change. A real game move can still take longer than 60s
-      # with no app-level ping/keepalive frame in between, so this helps but
-      # isn't a complete fix on its own - see README Troubleshooting.
-      origin_read_timeout       = 60
-      origin_keepalive_timeout  = 60
-
+      # all. Deliberately left unset (CloudFront's hard defaults, 30s
+      # response / 5s keep-alive) rather than raised - the API's own
+      # documented range is 1-120s/1-300s, but this account rejected both
+      # 180 and 60 live with InvalidOriginReadTimeout, meaning there's a
+      # separate, account-specific quota holding it at the literal default
+      # with no self-service headroom above it (not visible via the
+      # Service Quotas API either - checked). Raising this for real needs
+      # an AWS Support quota-increase request, not a Terraform value. Not
+      # the fix for the WebSocket disconnect bug either way - that was the
+      # origin mTLS incompatibility, fixed via the separate 8443 listener
+      # below - see README Troubleshooting.
       origin_mtls_config {
         client_certificate_arn = var.origin_mtls_client_certificate_arn
       }
