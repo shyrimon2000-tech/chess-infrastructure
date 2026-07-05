@@ -69,6 +69,13 @@ resource "helm_release" "eso" {
 
   create_namespace = true
 
+  # Default 300s is too tight now that ESO runs on Fargate (see the
+  # webhook.port note above) - same class of cold-start delay already
+  # documented for ingress-nginx (terraform/modules/ingress-nginx/main.tf),
+  # where Fargate's pod-provisioning retried twice before landing, 7 minutes
+  # after creation, well past the default timeout.
+  timeout = 900
+
   set = [
     {
       name  = "serviceAccount.name"

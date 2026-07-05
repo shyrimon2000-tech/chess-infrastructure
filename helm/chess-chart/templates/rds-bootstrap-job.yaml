@@ -4,7 +4,16 @@ kind: Job
 metadata:
   name: rds-bootstrap
   annotations:
-    "helm.sh/hook": post-install,post-upgrade
+    # pre-install/pre-upgrade (ArgoCD PreSync), not post-install/post-upgrade
+    # (ArgoCD PostSync) - PostSync only fires once every other synced
+    # resource in the Application is Healthy, but auth/room/game's
+    # Deployments can never become Healthy without the databases this Job
+    # creates (their init containers fail without them) - a real deadlock
+    # found live in prod: ArgoCD never even attempted to create the Job.
+    # PreSync runs before the rest of the chart's resources are synced at
+    # all, so the databases exist by the time the Deployments' init
+    # containers run. See README Troubleshooting.
+    "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "0"
     # Lets the same fixed Job name be reused on every upgrade instead of
     # erroring on "already exists" - Helm deletes the prior run's Job right
