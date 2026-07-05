@@ -312,6 +312,7 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 - `ClusterSecretStore` (fixed name `cluster-secret-store` — hardcoded in every chess-chart `values.yaml` `secretStoreRef.name`, must match exactly) has **no explicit `auth` block** — ESO falls back to the credentials of its own controller pod, i.e. the IRSA role above via the AWS SDK's default credential chain. Simpler than `auth.jwt.serviceAccountRef` (which would need extra RBAC for cross-namespace service account references) since there's only one ESO controller per cluster.
 - `terraform/modules/eso/` intentionally has no `outputs.tf` — nothing consumes an ESO output yet; added back if/when something needs `role_arn`
 - **Runs on its own dedicated Fargate profile** (`external_secrets` in `terraform/modules/eks/main.tf`'s `fargate_profiles`, namespace `external-secrets`) — same reasoning as the `aws_load_balancer_controller`/`external_dns` profiles above: controller + cert-controller + webhook only watch the K8s API and call the AWS SSM API, no real EC2 node needed. Previously required real EC2 (no Fargate profile covered its namespace), which meant `eso`'s terragrunt unit needed an ordering-only `dependency "nodepools"` just to have somewhere to schedule — removed once this profile was added, since Fargate doesn't need Karpenter/NodePools at all. Side benefit: frees up the EC2 NodePool's pod-density budget (see Karpenter's prefix-delegation note above) for actual application workload instead of ESO's 3 pods.
+- **Webhook moved off its default port (`webhook.port: "9443"` Helm value, default is `10250`)** — Fargate-specific gotcha, found on the very next live apply after moving ESO onto Fargate: see **Troubleshooting → "ESO's ClusterSecretStore fails admission with a certificate hostname mismatch (Fargate only)"**.
 
 ### Progress
 
@@ -701,6 +702,27 @@ Checked, not an issue here:
 - `terraform/environments/prod/argocd/terragrunt.hcl` — added three ordering-only dependencies, all output-unused: `rds` (bootstrap Job needs `auth`'s `DATABASE_URL` + the master password), `elasticache` (same Job also needs `room`/`game`'s `DATABASE_URL`, which `elasticache` writes — `rds` deliberately doesn't, see its own SSM-ownership note above), and `alb-controller` (chess-chart's own `Ingress` objects use `ingressClassName: alb`, and the controller's Ingress-validating webhook must be up first — same race class as the existing `argocd → ingress-nginx` dependency, just a different controller). Prod's manual sync policy already gates all of this in practice (a human decides when to sync), but these dependencies make it structurally impossible for ArgoCD to even exist before its prerequisites do, rather than relying only on nobody syncing too early. Audited the full prod dependency graph afterward (`grep` across every `terraform/environments/prod/*/terragrunt.hcl`) to confirm no other gaps of this shape remain and no cycles were introduced.
 
 **Result:** RDS's own `terraform apply`/`destroy` needs no VPN, no `ecs-runner`, and no SSM tunnel at all — it's pure AWS API, works identically from a laptop or a GitHub-hosted runner. The only remaining reason to want VPN access to RDS is optional, occasional human debugging (connect with any MySQL client using the master password), not automation.
+
+---
+
+### ESO's `ClusterSecretStore` fails admission with a certificate hostname mismatch (Fargate only)
+
+**Symptom:** on the very first live `terragrunt apply` after moving ESO onto its own Fargate profile (see Architectural Decisions → ESO), the `eso` unit failed:
+```
+Error: cluster-secret-store failed to run apply: error when creating "...kubectl_manifest.yaml":
+Internal error occurred: failed calling webhook "validate.clustersecretstore.external-secrets.io":
+failed to call webhook: Post "https://external-secrets-webhook.external-secrets.svc:443/...":
+tls: failed to verify certificate: x509: certificate is valid for
+fargate-ip-192-168-11-206.ec2.internal, ip-192-168-11-206.ec2.internal,
+not external-secrets-webhook.external-secrets.svc
+```
+Never happened while ESO ran on EC2 (Karpenter) nodes — confirmed it's specifically the Fargate move that introduced this.
+
+**Cause:** not a webhook-readiness race (the class of bug already fixed for the ALB controller/`ingress-nginx`) — this is a **port conflict**. `external-secrets`' webhook defaults to port `10250`, which collides with Fargate's own internal kubelet-equivalent listener on that exact port (every Fargate pod's "node" is really a per-pod microVM with its own such listener, sharing the pod's IP). kube-apiserver's call to the webhook Service gets answered by that internal Fargate listener instead of ESO's real webhook process, and the certificate it presents is scoped to the Fargate node's own IP hostname — not the webhook's Service DNS name kube-apiserver actually expects, so TLS verification fails before the request is ever handled by ESO. A documented, known Fargate limitation (also hits `cert-manager`'s webhook for the same reason) — not specific to this project's config.
+
+**Solution:** moved ESO's webhook off the conflicting port — added `webhook.port = "9443"` to `helm_release.eso`'s `set` block in `terraform/modules/eso/main.tf`. Same fix AWS's own `terraform-aws-eks-blueprints-addons` module landed on for this exact issue ([issue #55](https://github.com/aws-ia/terraform-aws-eks-blueprints-addons/issues/55), PR #373) — confirmed the value path (`webhook.port`, default `10250`) against the exact chart version this project pins (`external-secrets` `v0.10.7`).
+
+**Lesson:** moving a controller onto Fargate isn't a purely additive, risk-free change just because the *reasoning* ("only watches the K8s API, no real EC2 node needed") is sound in the abstract — Fargate's per-pod microVM networking model has its own quirks (shared pod/node IP, a reserved port) that don't exist on EC2 nodes, and can surface as a hard failure only once something that actually depends on the affected mechanism (here: an admission webhook call) gets exercised for real. The ALB controller and ExternalDNS profiles didn't hit this because neither uses port `10250` for anything.
 
 ---
 
