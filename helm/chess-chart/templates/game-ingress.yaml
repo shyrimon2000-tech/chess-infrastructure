@@ -33,9 +33,18 @@ spec:
               number: 8000
       {{- else if .Values.ingress.alb.enabled }}
       # CloudFront's strip_api_prefix function (terraform/modules/frontend)
-      # already removes the /api prefix before this reaches the ALB — see
-      # main-ingress.yaml for the full reasoning.
-      - path: /game
+      # strips "/api/game" entirely (not just "/api") before this reaches
+      # the ALB, so what arrives here is whatever game-service's own routes
+      # start with — "/games/..." for HTTP, "/ws/games/..." for the
+      # WebSocket upgrade. There is no "/game" segment left to match on.
+      - path: /games
+        pathType: Prefix
+        backend:
+          service:
+            name: game-service
+            port:
+              number: 8000
+      - path: /ws/games
         pathType: Prefix
         backend:
           service:
