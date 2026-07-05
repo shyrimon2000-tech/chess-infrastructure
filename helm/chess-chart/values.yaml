@@ -76,3 +76,21 @@ game:
 redis:
   enabled: true
   storageClassName: ""
+
+# Post-install/post-upgrade Helm hook Job that creates the per-service
+# database/user/grant on the real RDS instance - replaces the old Terraform
+# `mysql` provider approach (see README Troubleshooting). Only meaningful
+# where services use RDS (prod) - dev/staging's in-cluster MySQL StatefulSets
+# bootstrap their own single database via the official image's MYSQL_DATABASE
+# env var, no Job needed there.
+dbBootstrap:
+  enabled: false
+  externalSecret:
+    refreshInterval: 1h
+    secretStoreRef:
+      name: cluster-secret-store
+      kind: ClusterSecretStore
+    # SSM path to the RDS master password (plain string value, not JSON) -
+    # auth/room/game's own DATABASE_URL secrets are reused directly (see
+    # rds-bootstrap-secret.yaml), no separate parameter needed for those.
+    masterPasswordKey: ""

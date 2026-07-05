@@ -18,25 +18,6 @@ dependency "eks" {
   mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy", "import"]
 }
 
-# Ordering-only dependency — the ESO controller pod runs in the "external-secrets"
-# namespace, which isn't covered by any Fargate profile in the eks module (only
-# karpenter/argocd/grafana/ingress-nginx/kube-dns are), so it can only schedule on
-# a real EC2 node. Without this, eso can apply in parallel with karpenter/nodepools
-# and its helm_release times out waiting for a pod that has nowhere to run yet —
-# same root cause as the EBS CSI Driver's ordering fix. nodepools has no outputs;
-# this block exists purely to force apply order.
-dependency "nodepools" {
-  config_path = "../nodepools"
-
-  # "apply" included too, unlike other dependency blocks in this repo — nodepools
-  # has no real outputs at all (empty outputs.tf), so there's never a "real" value
-  # to resolve even after a successful apply. Safe here specifically because this
-  # dependency exists only for ordering (see comment above) and no input ever
-  # reads dependency.nodepools.outputs.*.
-  mock_outputs                            = {}
-  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy", "apply", "import"]
-}
-
 generate "helm_provider" {
   path      = "helm_provider.tf"
   if_exists = "overwrite_terragrunt"

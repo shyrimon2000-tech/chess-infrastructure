@@ -18,8 +18,18 @@ resource "kubectl_manifest" "nodepool" {
             - key: node.kubernetes.io/instance-type
               operator: In
               values:
+                # small added alongside medium/large - no downside: Karpenter
+                # only ever picks the cheapest option that actually fits the
+                # pending pod(s) it's sizing a node for, never forces a
+                # workload onto an undersized node. Rarely the winning pick
+                # once real chess-service load exists (bin-packed on purpose,
+                # so requests usually exceed one small's capacity already),
+                # but a cheaper option for a cold cluster's very first node or
+                # a lone leftover pod.
+                - t3.small
                 - t3.medium
                 - t3.large
+                - t3a.small
                 - t3a.medium
                 - t3a.large
       disruption:

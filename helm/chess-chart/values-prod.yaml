@@ -44,12 +44,18 @@ ingress:
       alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:us-east-1:221556121262:certificate/ca1021c5-69cf-42e9-948b-6c99a296f622"
       alb.ingress.kubernetes.io/mutual-authentication: '[{"port": 443, "mode": "verify", "trustStore": "arn:aws:elasticloadbalancing:us-east-1:221556121262:truststore/chess-prod-origin-mtls/0767d2b5c9aac873", "ignoreClientCertificateExpiry": false}]'
 
+# Sized for auth/room/game at HPA maxReplicas simultaneously (2050m/2432Mi
+# request, 4450m/4864Mi limit worst-case) plus the rds-bootstrap Job's own
+# footprint (50m/128Mi request, 150m/256Mi limit) added explicitly on top -
+# not left to incidental headroom, which happened to be just enough today
+# but isn't guaranteed to stay that way if service resources ever change
+# (see Troubleshooting: "Fewer replicas running than desired").
 resourcequota:
   hard:
-    requests.cpu: "2300m"
-    requests.memory: "2700Mi"
-    limits.cpu: "4900m"
-    limits.memory: "5300Mi"
+    requests.cpu: "2350m"
+    requests.memory: "2828Mi"
+    limits.cpu: "5050m"
+    limits.memory: "5556Mi"
 
 frontend:
   enabled: false
@@ -108,3 +114,8 @@ redis:
   enabled: false
   hostPath:
     enabled: false
+
+dbBootstrap:
+  enabled: true
+  externalSecret:
+    masterPasswordKey: "/chess-prod/rds/master-password"

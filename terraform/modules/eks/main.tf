@@ -20,6 +20,19 @@ module "eks" {
       # "nodeSelector" is not a valid top-level key in this addon's config schema
       # (verified via `aws eks describe-addon-configuration`) — only "affinity" is.
       configuration_values = jsonencode({
+        env = {
+          # t3.medium's default 17-max-pods ceiling (VPC CNI's one-IP-per-ENI-slot
+          # model: 3 ENIs x 5 IPs/ENI - 1 + 2) was found to bind before CPU/memory
+          # ever did — see README Troubleshooting. Prefix delegation assigns a
+          # /28 (16 IPs) per ENI slot instead of one IP at a time, raising the
+          # ceiling well above what this project's pod density needs.
+          # WARM_PREFIX_TARGET=1 keeps one spare prefix pre-warmed per node
+          # (AWS's own recommended default) - trades some up-front IP-space
+          # usage for faster pod scheduling, not a concern at prod's subnet
+          # size (251 usable IPs each).
+          ENABLE_PREFIX_DELEGATION = "true"
+          WARM_PREFIX_TARGET       = "1"
+        }
         affinity = {
           nodeAffinity = {
             requiredDuringSchedulingIgnoredDuringExecution = {
@@ -104,6 +117,19 @@ module "eks" {
     external_dns = {
       selectors = [
         { namespace = "external-dns" }
+      ]
+      subnet_ids = var.private_subnet_ids
+    }
+    # ESO's controller/cert-controller/webhook pods only watch the K8s API
+    # and call the AWS SSM API - same class of workload as
+    # aws_load_balancer_controller/external_dns above, no real EC2 node
+    # needed. Previously required a real node (see eso/terragrunt.hcl's now-
+    # removed `dependency "nodepools"` ordering block in both environments) -
+    # this closes that gap and frees the EC2 NodePool's pod-density budget for
+    # actual application workload instead.
+    external_secrets = {
+      selectors = [
+        { namespace = "external-secrets" }
       ]
       subnet_ids = var.private_subnet_ids
     }

@@ -1,0 +1,70 @@
+{{- if .Values.dbBootstrap.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rds-bootstrap
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    # Lets the same fixed Job name be reused on every upgrade instead of
+    # erroring on "already exists" - Helm deletes the prior run's Job right
+    # before creating this one. Deliberately not hook-succeeded too, so a
+    # failed run's pod/logs stay around for debugging until the next release.
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: bootstrap
+          image: mysql:8.0
+          # Overrides the image's own entrypoint (which otherwise tries to
+          # initialize a local mysqld) - only the `mysql` CLI binary is used
+          # here, against the real RDS instance.
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              # DATABASE_URL format is always mysql+pymysql://user:pass@host:port/db
+              # (see terraform/modules/rds's local.db_urls) - plain bash
+              # parameter expansion is enough, no regex/jq needed, and
+              # generated passwords never contain ":" or "@" (random_password
+              # special = false).
+              bootstrap() {
+                local url="$1"
+                local rest="${url#*://}"
+                local userpass="${rest%%@*}"
+                local hostportdb="${rest#*@}"
+                local user="${userpass%%:*}"
+                local pass="${userpass#*:}"
+                local hostport="${hostportdb%%/*}"
+                local db="${hostportdb#*/}"
+                local host="${hostport%%:*}"
+                local port="${hostport#*:}"
+
+                echo "Bootstrapping ${db} / ${user}@${host}:${port}..."
+                mysql -h "$host" -P "$port" -u admin -p"$ADMIN_PASSWORD" -e "
+                  CREATE DATABASE IF NOT EXISTS \`${db}\`;
+                  CREATE USER IF NOT EXISTS '${user}'@'%' IDENTIFIED BY '${pass}';
+                  ALTER USER '${user}'@'%' IDENTIFIED BY '${pass}';
+                  GRANT ALL PRIVILEGES ON \`${db}\`.* TO '${user}'@'%';
+                  FLUSH PRIVILEGES;
+                "
+              }
+
+              bootstrap "$AUTH_DATABASE_URL"
+              bootstrap "$ROOM_DATABASE_URL"
+              bootstrap "$GAME_DATABASE_URL"
+          envFrom:
+            - secretRef:
+                name: rds-bootstrap-secret
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "150m"
+              memory: "256Mi"
+{{- end }}
