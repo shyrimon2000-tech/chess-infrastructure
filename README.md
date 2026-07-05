@@ -624,6 +624,62 @@ kubectl logs <pod-name> -c migrate
 
 ---
 
+### ALB / CloudFront path routing (prod) — found 2026-07-04/05
+
+The two entries above fixed routing for nginx (dev/staging). ALB (prod) needed a completely different mechanism to solve the same underlying problem — documented separately because the failure mode, root cause, and fix all differ from the nginx case.
+
+#### Why a CloudFront Function exists here at all
+
+ALB's `path-pattern` listener-rule conditions only support literal characters plus `*`/`?` wildcards — no regex, no capture groups. nginx's `rewrite-target: /$1` (used for all three backend routes, see entries above) has no ALB equivalent: there's nothing on the ALB side that can both match a request *and* rewrite its path before forwarding. `terraform/modules/frontend/functions/strip-api-prefix.js` — a CloudFront Function attached to the `/api/*` cache behavior — exists to do that rewrite at the edge, one hop before the request ever reaches the ALB, so the ALB only ever sees plain, wildcard-free paths it's able to match.
+
+This also changes *where* routing decisions get made compared to nginx. With nginx, the ALB — sorry, the *Ingress* — matches the request's **original** path, and the rewrite to a different forwarded path is a separate, later step. With CloudFront Function → ALB, there is no such two-step: the function's output is **simultaneously** (a) what ALB's `path-pattern` condition matches against to pick a target group, and (b) the exact path forwarded to the pod. One rewrite, one output, two jobs — which is exactly what made the next bug possible.
+
+#### Naive uniform `/api` strip breaks room- and game-service routing
+
+**Symptom:** After switching prod routing from nginx to ALB + this CloudFront Function, auth worked (`POST /api/auth/register` succeeded end-to-end), but room-service returned `422` on what the browser's Network tab showed as `GET /api/rooms/rooms`, and `POST /rooms/rooms` returned `405` — both against room-service's own logs, ruling out a frontend bug (the identical frontend code works fine against nginx in dev/staging).
+
+**Cause:** the first version of `strip-api-prefix.js` stripped a flat, uniform 4 characters (`"/api"`) off every request, on the (wrong) assumption that this mirrors what nginx's `rewrite-target: /$1` does for every route. It doesn't — nginx's actual forwarded path depends on *where each route's own regex capture group starts*, and that differs per service:
+
+| Route | nginx Ingress path (capture group in `()`) | Prefix actually consumed before forwarding | Naive 4-char `/api` strip | Correct? |
+|---|---|---|---|---|
+| auth | `/api/(auth/.*)` | `/api` (4 chars) | `/api` | ✅ correct, by coincidence only |
+| rooms | `/api/rooms/(rooms.*)` | `/api/rooms` (10 chars) | `/api` | ❌ leaves `/rooms/rooms` (duplicated segment) instead of `/rooms` |
+| game | `/api/game/(.*)` | `/api/game` (9 chars) | `/api` | ❌ leaves `/game/games/...` (extra `/game` segment) instead of `/games/...` |
+
+Auth only "worked" because its capture group happens to start exactly 4 characters in — the same coincidence that made the bug invisible until rooms/game traffic was actually exercised.
+
+**Solution:** rewrote `strip-api-prefix.js` to branch per route, most-specific prefix first, replicating nginx's real per-route behavior instead of one uniform strip:
+- `/api/rooms/*` → strips `"/api/rooms"` (10 chars)
+- `/api/game/*` → strips `"/api/game"` (9 chars)
+- everything else starting `/api` → strips `"/api"` (4 chars) — this is the auth case
+
+Concrete trace after the fix (query strings are handled separately by CloudFront Functions — `request.uri` never includes them, so the function doesn't need to touch `?token=...` at all):
+
+| What the browser sends | Function output (= what ALB matches AND forwards) | ALB rule | What the pod receives |
+|---|---|---|---|
+| `/api/auth/register` | `/auth/register` | `path: /auth` | `/auth/register` |
+| `/api/rooms/rooms` | `/rooms` | `path: /rooms` | `/rooms` |
+| `/api/rooms/rooms/42/join` | `/rooms/42/join` | `path: /rooms` | `/rooms/42/join` |
+| `/api/game/games/123/move` | `/games/123/move` | `path: /games` | `/games/123/move` |
+| `/api/game/ws/games/123?token=...` | `/ws/games/123` (+ query preserved) | `path: /ws/games` | `/ws/games/123?token=...` |
+
+Also fixed `helm/chess-chart/templates/game-ingress.yaml`'s ALB branch to match: the path was `/game` (`pathType: Prefix`), which is wrong once the function correctly drops the `/game` segment entirely — no `/game`-prefixed path ever reaches the ALB for game traffic, only `/games/...` and `/ws/games/...`. Changed to two separate `pathType: Prefix` rules, `/games` and `/ws/games`, both routed to `game-service`.
+
+**Lesson:** the room/game double-segment quirk (`/api/rooms/rooms`, `/api/game/games`) is a real mismatch between what the frontend calls and what those two services' own routers expect — not something this repo controls or should "fix" by guessing at a cleverer rewrite. The CloudFront Function's job is only to reproduce nginx's existing, working behavior on a platform that can't run nginx-style regex rewrites — not to editorialize on whether that behavior is well-designed. Logged as accepted tech debt, not touched further.
+
+#### Follow-on: no manual `/*` needed on ALB `pathType: Prefix` paths
+
+Tempting to add a trailing `/games/*` by hand, matching how you'd write a path pattern directly in the ALB console — don't. With `pathType: Prefix` (AWS Load Balancer Controller v2.2.0+, the current default), the controller itself expands Kubernetes' Prefix semantics into the correct underlying ALB path-pattern condition(s) — `/games` alone already covers `/games` and everything nested under it. Manually adding a `*` character is rejected outright: `pathType: Prefix` explicitly disallows wildcard characters in the literal path field (`*`/`?` wildcards are only valid under `pathType: ImplementationSpecific` — which is what the nginx branch of this same chart uses instead, for an unrelated reason: real regex capture groups, not ALB-style wildcards).
+
+#### Follow-on: does merging `main-ingress` + `game-ingress` into one ALB (`group.name`) risk ambiguous routing or duplicate DNS records?
+
+Checked, not an issue here:
+
+- **Routing:** `alb.ingress.kubernetes.io/group.name: chess-prod` merges both Ingress objects' rules into one ALB's rule set (standard AWS Load Balancer Controller behavior for `IngressGroup`, not a hack — see Architectural Decisions → ALB/ExternalDNS above). Ambiguity would only matter if merged rules had overlapping path prefixes; `/rooms`, `/auth`, `/games`, and `/ws/games` are fully disjoint, so evaluation order across the merged rule set never matters here. (This is also why the frontend's regex catch-all path being scoped strictly to the nginx branch, not the ALB branch, matters beyond just regex-syntax safety — a stray ALB catch-all would have collided with all four of these.)
+- **DNS:** both Ingress objects declare the same `host` (`api-origin.alexit.online`, from the shared `.Values.ingress.host`) and, because they share one physical ALB via `group.name`, the AWS Load Balancer Controller writes the **same** ALB DNS name into both objects' `status.loadBalancer.ingress[].hostname`. ExternalDNS sees two sources converging on one identical (hostname, target) pair, not a conflict — and `policy: upsert-only` (`terraform/modules/external-dns/main.tf`) means it only ever creates/updates records it owns, never deletes, so even a redundant upsert of the same value is a no-op, not a risk.
+
+---
+
 ### PersistentVolume not binding
 
 **Symptom:** StatefulSet pod stuck in `Pending` with `unbound PersistentVolumeClaims`.
