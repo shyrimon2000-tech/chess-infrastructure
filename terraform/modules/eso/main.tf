@@ -77,6 +77,21 @@ resource "helm_release" "eso" {
     {
       name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
       value = aws_iam_role.eso.arn
+    },
+    {
+      # Default webhook port (10250) collides with Fargate's own internal
+      # kubelet-equivalent listener on that same port on the pod's node IP -
+      # kube-apiserver's webhook call gets answered by that instead of ESO's
+      # real webhook, which is why the TLS cert it gets back is scoped to the
+      # Fargate node's own IP hostname, not the webhook's Service DNS name
+      # (x509: certificate is valid for fargate-ip-..., not
+      # external-secrets-webhook.external-secrets.svc). Only surfaced once
+      # ESO moved onto its own Fargate profile - never an issue on EC2 nodes.
+      # Same fix AWS's own eks-blueprints-addons module landed on for this
+      # exact problem (github.com/aws-ia/terraform-aws-eks-blueprints-addons
+      # issue #55, PR #373).
+      name  = "webhook.port"
+      value = "9443"
     }
   ]
 }
