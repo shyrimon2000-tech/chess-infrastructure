@@ -1,0 +1,60 @@
+name: Bootstrap Shared
+
+# Manual, dev-branch-only, apply with no preceding plan step — this is
+# specifically for the *first* apply of a torn-down shared environment,
+# where a plan would fail anyway: units like vpn/argocd/eso do real AWS
+# lookups (e.g. vpn's data "aws_eks_cluster") against dependencies that
+# don't exist yet, and get a mock value instead. A full `apply`, in
+# dependency order, resolves this fine — by the time it reaches vpn, eks
+# has already been created earlier in the same run. Once shared is up,
+# use the regular terraform.yml workflow (plan-checked PRs + its own
+# workflow_dispatch apply) for ongoing changes.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write # required for AWS OIDC federation
+  contents: read
+
+env:
+  TERRAFORM_VERSION: "1.15.7"
+  TERRAGRUNT_VERSION: "1.0.8"
+  AWS_REGION: "us-east-1"
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Fail closed on any branch but dev
+        run: |
+          if [ "${{ github.ref_name }}" != "dev" ]; then
+            echo "::error::bootstrap-shared must be dispatched from the dev branch (got '${{ github.ref_name }}')"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: "arn:aws:iam::221556121262:role/chess-shared-cicd"
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: |
+          curl -Lo /usr/local/bin/terragrunt "https://github.com/gruntwork-io/terragrunt/releases/download/v${{ env.TERRAGRUNT_VERSION }}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+
+      - name: Terragrunt apply --all
+        working-directory: terraform/environments/shared
+        env:
+          ADMIN_PRINCIPAL_ARN: ${{ secrets.ADMIN_PRINCIPAL_ARN }}
+        run: terragrunt run --all --non-interactive -- apply -auto-approve
