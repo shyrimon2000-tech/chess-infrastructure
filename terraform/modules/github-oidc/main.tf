@@ -123,11 +123,19 @@ resource "aws_iam_role" "prod" {
 # environment uses which service — a reasonable simplification given the
 # overlap, revisit if the two environments' footprints diverge further.
 #
-# ecs:*/logs:* deliberately excluded — no ECS/CloudWatch Logs usage anywhere
-# in this repo (the module that used to need them, ecs-runner, was removed).
+# ecs:* deliberately excluded — no ECS usage anywhere in this repo (the
+# module that used to need it, ecs-runner, was removed).
 #
 # wafv2:*/waf:*/waf-regional:* included even though nothing uses WAF yet —
 # planned future work, not a currently-exercised permission.
+#
+# autoscaling:*/kms:*/logs:* added after a real CI plan against the live
+# prod cluster failed on kms:DescribeKey and logs:DescribeLogGroups (EKS
+# reads its own KMS key + CloudWatch log group as part of describing the
+# cluster) — cross-checked against terraform-aws-modules/terraform-aws-eks's
+# own iam-permissions.md, which also lists autoscaling:* as required
+# (managed node groups / ASG operations) even though nothing had failed on
+# that one yet in this project.
 data "aws_iam_policy_document" "cicd_permissions" {
   statement {
     effect    = "Allow"
@@ -135,6 +143,9 @@ data "aws_iam_policy_document" "cicd_permissions" {
     actions = [
       "ec2:*",
       "eks:*",
+      "autoscaling:*",
+      "kms:*",
+      "logs:*",
       "rds:*",
       "elasticache:*",
       "s3:*",
