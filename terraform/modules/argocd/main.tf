@@ -26,6 +26,34 @@ resource "helm_release" "argocd" {
 
   create_namespace = true
 
+  # policy.csv specifically has to go through `values` (real YAML), not
+  # `set` — confirmed via a real apply failure: Helm's `--set` syntax reads
+  # unescaped commas in a value as separators between *additional*
+  # key=value pairs, and this CSV-formatted policy is full of them
+  # ("Failed parsing key ' role:chess-prod-viewer' has no value" — the
+  # comma after "role:chess-prod-viewer" split what should've been one
+  # value into fragments). `values` has no such parsing, since it's a plain
+  # YAML string, not Helm's CLI-flag-style mini-syntax.
+  #
+  # role:<name>-viewer gets read-only "applications, get" on every
+  # AppProject this instance owns — root (defined above) plus one entry
+  # per var.app_projects key (apps-dev/apps-staging on shared, apps on
+  # prod) — then the final `g` line is what actually grants this role to
+  # the viewer account; without it the role would exist but nobody would
+  # hold it.
+  values = [
+    <<-YAML
+      configs:
+        rbac:
+          policy.csv: |
+            p, role:${var.name}-viewer, applications, get, ${var.name}-root/*, allow
+            %{~ for key in keys(var.app_projects) ~}
+            p, role:${var.name}-viewer, applications, get, ${var.name}-${key}/*, allow
+            %{~ endfor ~}
+            g, viewer, role:${var.name}-viewer
+    YAML
+  ]
+
   set = concat(
     [
       {
@@ -43,22 +71,6 @@ resource "helm_release" "argocd" {
         # since this account has no CLI/API-token use case.
         name  = "configs.cm.accounts\\.viewer"
         value = "login"
-      },
-      {
-        # role:<name>-viewer gets read-only "applications, get" on every
-        # AppProject this instance owns — root (defined above) plus one
-        # entry per var.app_projects key (apps-dev/apps-staging on shared,
-        # apps on prod) — then the final `g` line is what actually grants
-        # this role to the viewer account; without it the role would exist
-        # but nobody would hold it.
-        name = "configs.rbac.policy\\.csv"
-        value = <<-EOT
-          p, role:${var.name}-viewer, applications, get, ${var.name}-root/*, allow
-          %{~ for key in keys(var.app_projects) ~}
-          p, role:${var.name}-viewer, applications, get, ${var.name}-${key}/*, allow
-          %{~ endfor ~}
-          g, viewer, role:${var.name}-viewer
-        EOT
       },
       {
         # Explicit "no default role" — any account without its own `g` line

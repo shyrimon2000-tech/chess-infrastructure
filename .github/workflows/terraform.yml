@@ -87,6 +87,16 @@ jobs:
       # for nodepools/vpn/argocd/eso every time, regardless of whether the
       # cluster actually exists. A standalone `terragrunt plan` inside each
       # unit's own directory reads real dependency state correctly instead.
+      #
+      # Fixed 2026-07-06: this also required normalizing root.hcl's S3 key
+      # (path_relative_to_include() returns OS-native separators —
+      # backslashes from a Windows apply, forward slashes from this Linux
+      # runner, for the exact same unit, i.e. two different S3 objects).
+      # All 26 existing state objects were migrated to the normalized
+      # (forward-slash) key via PowerShell's `aws s3api copy-object` +
+      # ETag verification + delete-object (an initial Git Bash attempt
+      # with `aws s3 cp` failed — MSYS mangles s3:// URIs containing
+      # backslashes — reverted cleanly before anything was touched).
       - name: Terragrunt plan (per unit)
         working-directory: ${{ steps.env.outputs.dir }}
         env:
@@ -96,11 +106,6 @@ jobs:
           # otherwise. Secret, not a plain repo variable: pairs the account
           # ID with a personal IAM username (see README Prerequisites).
           ADMIN_PRINCIPAL_ARN: ${{ secrets.ADMIN_PRINCIPAL_ARN }}
-          # TEMPORARY — debugging why dependencies show "has no outputs" in
-          # CI specifically (rules out: bucket policy — none exists; stale
-          # cache — a clean local cache reads real state fine). Remove once
-          # root cause is found.
-          TG_LOG: debug
         run: |
           status=0
           for unit in */; do
