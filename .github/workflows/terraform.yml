@@ -79,7 +79,15 @@ jobs:
           curl -Lo /usr/local/bin/terragrunt "https://github.com/gruntwork-io/terragrunt/releases/download/v${{ env.TERRAGRUNT_VERSION }}/terragrunt_linux_amd64"
           chmod +x /usr/local/bin/terragrunt
 
-      - name: Terragrunt plan
+      # Per-unit, not `run --all`: confirmed empirically (both against a
+      # live prod cluster and locally) that `run --all plan` substitutes
+      # mock dependency outputs for any unit that's part of the same batch
+      # as its dependency (here: eks), even when that dependency has real,
+      # already-applied state — breaking the kubectl/helm provider config
+      # for nodepools/vpn/argocd/eso every time, regardless of whether the
+      # cluster actually exists. A standalone `terragrunt plan` inside each
+      # unit's own directory reads real dependency state correctly instead.
+      - name: Terragrunt plan (per unit)
         working-directory: ${{ steps.env.outputs.dir }}
         env:
           # Same value the personal `access_entries.personal` entry needs
@@ -88,7 +96,17 @@ jobs:
           # otherwise. Secret, not a plain repo variable: pairs the account
           # ID with a personal IAM username (see README Prerequisites).
           ADMIN_PRINCIPAL_ARN: ${{ secrets.ADMIN_PRINCIPAL_ARN }}
-        run: terragrunt run --all --non-interactive -- plan
+        run: |
+          status=0
+          for unit in */; do
+            unit="${unit%/}"
+            if [ -f "$unit/terragrunt.hcl" ]; then
+              echo "::group::terragrunt plan - $unit"
+              (cd "$unit" && terragrunt plan --non-interactive) || status=1
+              echo "::endgroup::"
+            fi
+          done
+          exit $status
 
   apply:
     needs: plan
