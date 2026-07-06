@@ -1,10 +1,12 @@
 name: Terraform CI/CD
 
-# plan on every PR into dev/main (required branch-protection check, nothing
-# applied) — apply only on manual workflow_dispatch, never automatically on
-# merge. This is a pet project torn down between sessions for cost, not
-# always-on infra: an apply-on-merge trigger would mean every dev/main merge
-# tries to (re)create a whole EKS cluster, which isn't wanted here.
+# plan runs on every PR into dev/main (required branch-protection check) AND
+# on workflow_dispatch (as a mandatory gate immediately before apply, in the
+# same run) — apply itself only ever runs on workflow_dispatch, never
+# automatically on merge. This is a pet project torn down between sessions
+# for cost, not always-on infra: an apply-on-merge trigger would mean every
+# dev/main merge tries to (re)create a whole EKS cluster, which isn't
+# wanted here.
 on:
   pull_request:
     branches: [dev, main]
@@ -26,23 +28,38 @@ env:
 
 jobs:
   plan:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+
+    outputs:
+      dir: ${{ steps.env.outputs.dir }}
+      role_arn: ${{ steps.env.outputs.role_arn }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # PR's target branch decides which environment: dev -> shared, main -> prod.
+      # pull_request: target branch is github.base_ref (github.ref_name is
+      # empty for this event type). workflow_dispatch: no base_ref exists at
+      # all, use github.ref_name (the branch it was dispatched from) instead.
       - name: Determine environment
         id: env
         run: |
-          if [ "${{ github.base_ref }}" = "dev" ]; then
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            branch="${{ github.base_ref }}"
+          else
+            branch="${{ github.ref_name }}"
+          fi
+
+          if [ "$branch" = "dev" ]; then
             echo "dir=terraform/environments/shared" >> "$GITHUB_OUTPUT"
             echo "role_arn=${{ env.SHARED_ROLE_ARN }}" >> "$GITHUB_OUTPUT"
-          else
+          elif [ "$branch" = "main" ]; then
             echo "dir=terraform/environments/prod" >> "$GITHUB_OUTPUT"
             echo "role_arn=${{ env.PROD_ROLE_ARN }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Could not determine environment for branch '$branch'"
+            exit 1
           fi
 
       - name: Configure AWS credentials
@@ -74,6 +91,7 @@ jobs:
         run: terragrunt run --all --non-interactive -- plan
 
   apply:
+    needs: plan
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
@@ -81,29 +99,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # workflow_dispatch is triggered from a chosen branch — reuse that
-      # (github.ref_name) rather than a separate input, so the environment
-      # actually applied always matches the branch whose OIDC trust
-      # condition (ref:refs/heads/dev or .../main) let this run assume a
-      # role in the first place. Anything else fails closed.
-      - name: Determine environment
-        id: env
-        run: |
-          if [ "${{ github.ref_name }}" = "dev" ]; then
-            echo "dir=terraform/environments/shared" >> "$GITHUB_OUTPUT"
-            echo "role_arn=${{ env.SHARED_ROLE_ARN }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.ref_name }}" = "main" ]; then
-            echo "dir=terraform/environments/prod" >> "$GITHUB_OUTPUT"
-            echo "role_arn=${{ env.PROD_ROLE_ARN }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::workflow_dispatch must be run from the dev or main branch (got '${{ github.ref_name }}')"
-            exit 1
-          fi
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ steps.env.outputs.role_arn }}
+          role-to-assume: ${{ needs.plan.outputs.role_arn }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
@@ -118,7 +117,7 @@ jobs:
           chmod +x /usr/local/bin/terragrunt
 
       - name: Terragrunt apply
-        working-directory: ${{ steps.env.outputs.dir }}
+        working-directory: ${{ needs.plan.outputs.dir }}
         env:
           ADMIN_PRINCIPAL_ARN: ${{ secrets.ADMIN_PRINCIPAL_ARN }}
         run: terragrunt run --all --non-interactive -- apply -auto-approve

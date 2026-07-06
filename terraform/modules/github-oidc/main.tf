@@ -18,9 +18,21 @@ resource "aws_iam_openid_connect_provider" "github" {
 }
 
 # Trust policy for the dev branch — enforced via the `sub` claim, which
-# encodes repo+ref. This (not anything about the provider itself) is what
-# makes it impossible for a workflow run on any other branch to assume this
-# role.
+# encodes repo+ref for push/workflow_dispatch events. This (not anything
+# about the provider itself) is what makes it impossible for a
+# workflow_dispatch run on any other branch to assume this role.
+#
+# Also accepts "repo:<repo>:pull_request" — GitHub sets `sub` to this fixed
+# value (no branch info at all) for every pull_request-triggered run,
+# regardless of base or head branch (confirmed: this is why the plan job
+# first failed with "Not authorized to perform sts:AssumeRoleWithWebIdentity"
+# — neither role's trust policy matched the pull_request token's actual sub
+# until this was added). This does mean a pull_request run into *either*
+# dev or main could technically assume *either* role — an acceptable gap
+# for now since both roles currently carry identical permissions anyway
+# (see cicd_permissions below) and only the plan job (read-only, never
+# applies) runs on pull_request; revisit with a base_ref-based condition if
+# the two roles' permissions ever diverge.
 data "aws_iam_policy_document" "assume_role_dev" {
   statement {
     effect  = "Allow"
@@ -40,7 +52,10 @@ data "aws_iam_policy_document" "assume_role_dev" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repo}:ref:refs/heads/dev"]
+      values = [
+        "repo:${var.github_repo}:ref:refs/heads/dev",
+        "repo:${var.github_repo}:pull_request",
+      ]
     }
   }
 }
@@ -65,7 +80,10 @@ data "aws_iam_policy_document" "assume_role_main" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repo}:ref:refs/heads/main"]
+      values = [
+        "repo:${var.github_repo}:ref:refs/heads/main",
+        "repo:${var.github_repo}:pull_request",
+      ]
     }
   }
 }
