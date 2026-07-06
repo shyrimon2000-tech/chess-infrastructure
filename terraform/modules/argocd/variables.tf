@@ -43,3 +43,8 @@ variable "ingress_hostname" {
   type        = string
   default     = "argocd.chess.internal"
 }
+
+variable "app_projects" {
+  description = "Map of AppProject name suffix -> namespaces it's allowed to deploy chess-chart Applications into. Each key becomes an AppProject named \"<name>-<key>\" (name = var.name). E.g. shared: { \"apps-dev\" = [\"dev\"], \"apps-staging\" = [\"staging\"] } — split per namespace so a bug in the auto-syncing dev bucket can't land in staging. prod: { \"apps\" = [\"production\"] } — single namespace, no split needed."
+  type        = map(list(string))
+}

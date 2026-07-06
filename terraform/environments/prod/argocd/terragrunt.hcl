@@ -112,6 +112,12 @@ inputs = {
   gitops_dir             = "prod"
   gitops_target_revision = "main"
 
+  # Single namespace here, no split needed — see app_projects description
+  # in variables.tf.
+  app_projects = {
+    "apps" = ["production"]
+  }
+
   # VPN-only, private — same nginx+Ingress pattern as shared, not the public
   # ALB. The chess services themselves still go through the ALB; only the
   # admin-facing ArgoCD UI needs to stay off the public internet.

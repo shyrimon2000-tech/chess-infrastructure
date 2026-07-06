@@ -19,7 +19,7 @@ spec:
     metadata:
       name: '{{.app}}-{{.env}}'
     spec:
-      project: default
+      project: "chess-shared-apps-staging"
       source:
         repoURL: https://github.com/shyrimon2000-tech/chess-infrastructure.git
         targetRevision: '{{.targetRevision}}'

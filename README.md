@@ -50,6 +50,17 @@ This is controlled automatically via the `db.enabled` flag — no manual Network
 
 Game has the lowest CPU threshold (60%) because it handles real-time WebSocket connections — scaling earlier avoids latency spikes under load.
 
+### Rolling Update Strategy
+
+| Service | maxUnavailable | maxSurge |
+|---|---|---|
+| auth | 0 | 1 |
+| room | 0 | 1 |
+| game | 0 | 1 |
+| frontend | *(unset — Kubernetes default: 25%/25%)* | |
+
+`auth`/`room`/`game` all set explicit `strategy.rollingUpdate` (`values.yaml`'s new `rollingUpdate.maxUnavailable`/`maxSurge`, read by each service's `deployment.yaml`) rather than relying on the Kubernetes default (`25%` for both). `maxUnavailable: 0` means an old pod is never terminated until its replacement has passed `readinessProbe` and is `Ready` — zero-downtime, one pod swapped at a time (`maxSurge: 1` caps how many extra pods can exist mid-rollout). This matters most for `game`: a rollout that took down an active game-session pod before its replacement was ready would risk the same 30s-reconnect-timeout scored-loss scenario documented for Spot interruptions (see Terraform Karpenter NodePool section) — just triggered by a deploy instead of a node eviction. `frontend` is left at the Kubernetes default since it's stateless static content (and only runs as a container Deployment at all in dev/staging — prod serves it from S3 + CloudFront, no Deployment involved).
+
 ### ResourceQuota
 
 | | Dev | Staging | Prod |
@@ -307,6 +318,20 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 - No verified community Terraform module exists for ArgoCD — installed via raw `helm_release` (argo-helm chart), same as Karpenter
 - `argocd` (prod) has four ordering-only terragrunt dependencies, all output-unused, existing purely to fix apply order: `ingress-nginx` (its own Ingress needs that controller's admission webhook ready — see **Troubleshooting → "Addons stuck waiting for compute that doesn't exist yet"**), and `rds` + `elasticache` + `alb-controller` (chess-chart's `rds-bootstrap` Helm hook Job and ALB `Ingress` objects would otherwise be able to sync before their prerequisites exist — see **Troubleshooting → "RDS bootstrap without a VPN/private-VPC dependency"**). Structural mitigation, not a hard guarantee — prod's sync is manual, so a human could still trigger a sync too early once ArgoCD exists.
 
+**ArgoCD RBAC**
+- Three layers, all written now — same shape as Kubernetes RBAC, just without a literal cluster/namespace binding: AppProject ≈ `Role` (a named set of permissions, scoped to an object pattern instead of a namespace), the `g` policy line ≈ `RoleBinding` (binds a subject to that role), and a role with no object-pattern restriction (or `project: default`) ≈ `ClusterRole`/`ClusterRoleBinding`.
+  1. **AppProject** — scopes *what* an `Application` is allowed to touch (source repo, destination namespace), enforced by ArgoCD itself at sync time. **Done.**
+  2. **Local account (`viewer`)** — a login identity, declared in `configs.cm`, password (SSM-backed bcrypt hash, same pattern as admin) set via `set_sensitive`. **Done.**
+  3. **RBAC policy (`configs.rbac.policy.csv` + `policy.default`)** — scopes *who* can do *what* against a given AppProject. **Done.**
+- **Why AppProject exists on top of the git-folder/branch split that already separates environments:** `gitops_dir`/`gitops_target_revision` only control *which git content* an ArgoCD instance reads — they say nothing about what ArgoCD is allowed to *do* with that content once read. Every `Application`/`ApplicationSet` previously ran under `project: default`, which has no restrictions at all (any repo, any namespace, any resource kind). AppProject is a second, independent guardrail enforced by the ArgoCD controller at sync time, regardless of how the content got there — it catches mistakes the git-folder split can't, e.g. a typo'd `namespace:` in a generator template.
+- **`kubectl_manifest.app_project_root`** (one per instance) — scopes `root_app` itself to destination `namespace: argocd` only, since that's the only place it ever needs to create `ApplicationSet` objects.
+- **`kubectl_manifest.app_project_apps`** (`for_each` over `var.app_projects`, a `map(list(string))` set per-environment via terragrunt) — one AppProject per map entry, scoping the actual chess-chart `Application`s each bucket's `ApplicationSet` generates. Shared splits this **per namespace** (`apps-dev` → `[dev]`, `apps-staging` → `[staging]`) rather than one combined project covering both: dev's bucket is `automated: true` (auto-sync, no human review), so a bug in its generator template that emitted the wrong `namespace:` would otherwise sync straight into staging with no guardrail — splitting means staging simply isn't a valid destination for anything `apps-dev`-scoped, so ArgoCD rejects the sync outright. Prod has only one namespace (`production`), so no split is needed there (`var.app_projects = { "apps" = ["production"] }`).
+- Both AppProject resources are Terraform-owned (`kubectl_manifest`, same as `root_app`) rather than hand-written git YAML — this is environment *topology* (which projects exist, their boundaries), the same category of thing `root_app` itself already is, not deploy content.
+- `root_app`'s `depends_on` includes `app_project_root` (hard dependency — `root_app`'s own `spec.project` references it directly) and `app_project_apps` (soft — nothing Terraform-owned references these directly, only the hand-written `ApplicationSet` YAML in git does, applied later by ArgoCD's own controller — included anyway so a fresh apply brings up the whole topology in one pass instead of ArgoCD retrying past a transient "project does not exist" error).
+- **`viewer` account** — `configs.cm.accounts\.viewer: "login"` (capability declaration, not a secret) plus `configs.secret.extra.accounts\.viewer\.password` (bcrypt hash from a new `/${var.name}/argocd/viewer-password-hash` SSM parameter, same manual-bootstrap pattern as the admin password). Both this and the admin password moved to `set_sensitive` (rather than plain `set`) for an explicit redaction guarantee independent of the SSM data source's own sensitivity marking.
+- **RBAC policy** — one `configs.rbac.policy\.csv` value per instance: a `p` line for `${var.name}-root/*`, one more `p` line per `var.app_projects` key (generated via the same `%{ for %}` template pattern as the AppProject destinations, so it scales automatically with however many entries that map has), and a final `g, viewer, role:${var.name}-viewer` line binding the account to the role — without that last line the role would exist with no one holding it. `configs.rbac.policy\.default` is set to `""` explicitly (rather than left to the chart's own default) so any account added later without its own `g` line gets zero access rather than an unreviewed fallback.
+- **Status:** `terragrunt validate` passes on both `shared` and `prod` for all three layers; the generated AppProject `yaml_body` was rendered and checked independently (outside the `kubectl` provider, which needs a real cluster CA cert to configure — the `eks` dependency's mock output isn't valid PEM, so a real `plan`/`apply` isn't possible pre-cluster). **Not yet applied against a live cluster** — unverified whether `viewer` can actually log in and see only its scoped projects until a real `helm_release`/`kubectl_manifest` apply happens against a live EKS cluster.
+
 **ESO — External Secrets Operator**
 - `helm_release` (chart `external-secrets/external-secrets`) + `kubectl_manifest` for `ClusterSecretStore`, same bootstrap pattern as ArgoCD's `ApplicationSet`
 - One IRSA role per environment, scoped to `ssm:GetParameter[s][ByPath]` on `arn:...:parameter/${var.name}/*` — shared's role can only read `/chess-shared/*`, prod's only `/chess-prod/*`, no cross-environment access even by mistake
@@ -335,7 +360,7 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 | ALB Ingress Controller (prod) | module written (`terraform/modules/alb-controller`), `terragrunt validate` passes — controller itself not yet (re-)applied since the 2026-07-04 security-group fix (443, was 80) and Service-webhook race fix (`enableServiceMutatorWebhook = false`). Real ALB won't exist until chess-chart is deployed via ArgoCD (see ALB/ExternalDNS section) — end-to-end `/api/*` routing through CloudFront unverified until then |
 | Origin mTLS (prod) | `terraform/modules/origin-mtls` — **applied 2026-07-04**. Self-signed CA + client cert + ALB trust store + ALB's own server cert, excluded from `run --all destroy` for ARN stability (see ALB/ExternalDNS section). ARNs copied into `values-prod.yaml`; not yet verified end-to-end against a live ALB |
 | ExternalDNS (prod) | module written (`terraform/modules/external-dns`), `terragrunt validate` passes — not yet applied |
-| ArgoCD RBAC per environment | not started — **required by interview task** |
+| ArgoCD RBAC per environment | All three layers written — **AppProject** (root + per-namespace apps projects, shared split dev/staging), **`viewer` local account** (SSM-backed password, same pattern as admin), **RBAC policy** (`policy.csv` + explicit empty `policy.default`) — `terragrunt validate` passes both envs. **Not yet applied against a live cluster** — required by interview task, see ArgoCD RBAC section above for what's unverified |
 | Route53 public zone (prod) | not started |
 | S3 + CloudFront (prod frontend) | `terraform/modules/frontend` — **applied 2026-07-04**, origin switched to `https-only` + origin mTLS (see ALB/ExternalDNS section) |
 
@@ -825,7 +850,7 @@ Always declare `resources` on every container you control — including initCont
 
 **Symptom:** After fixing initContainer resources and running `kubectl apply`, the deployment stays at partial replicas. New pods fail with quota exceeded despite the fix.
 
-**Cause:** The existing pod was created before the fix and still holds quota based on old resource specs. Rolling update cannot proceed: it needs to create a new pod first (maxUnavailable=0 by default), but quota is blocked by the old pod's inflated reservation.
+**Cause:** The existing pod was created before the fix and still holds quota based on old resource specs. Rolling update cannot proceed: it needs to create a new pod first (`maxUnavailable: 0`, explicit for auth/room/game — see Rolling Update Strategy above), but quota is blocked by the old pod's inflated reservation.
 
 **Solution:** Scale to 0, then back to the desired replica count:
 ```bash
