@@ -10,6 +10,10 @@ hpa:
   maxReplicas: 6
   targetCPUUtilizationPercentage: 60
 
+rollingUpdate:
+  maxUnavailable: 0
+  maxSurge: 1
+
 resources:
   requests:
     memory: "256Mi"

@@ -8,6 +8,11 @@ spec:
   {{- if not .Values.hpa.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: {{ .Values.rollingUpdate.maxUnavailable }}
+      maxSurge: {{ .Values.rollingUpdate.maxSurge }}
   selector:
     matchLabels:
       app: chess-room-service

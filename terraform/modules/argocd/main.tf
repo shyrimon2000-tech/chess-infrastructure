@@ -1,10 +1,19 @@
 locals {
-  admin_password_ssm_path = "/${var.name}/argocd/admin-password-hash"
+  admin_password_ssm_path  = "/${var.name}/argocd/admin-password-hash"
+  viewer_password_ssm_path = "/${var.name}/argocd/viewer-password-hash"
 }
 
 # Created manually, same as wg-easy's — Terraform only reads it.
 data "aws_ssm_parameter" "admin_password_hash" {
   name            = local.admin_password_ssm_path
+  with_decryption = true
+}
+
+# Same pattern as admin — bcrypt hash generated locally, stored in SSM by
+# hand, Terraform only reads it. Backs the read-only "viewer" local account
+# (RBAC role granted in the policy layer, not here — see variables.tf).
+data "aws_ssm_parameter" "viewer_password_hash" {
+  name            = local.viewer_password_ssm_path
   with_decryption = true
 }
 
@@ -17,6 +26,34 @@ resource "helm_release" "argocd" {
 
   create_namespace = true
 
+  # policy.csv specifically has to go through `values` (real YAML), not
+  # `set` — confirmed via a real apply failure: Helm's `--set` syntax reads
+  # unescaped commas in a value as separators between *additional*
+  # key=value pairs, and this CSV-formatted policy is full of them
+  # ("Failed parsing key ' role:chess-prod-viewer' has no value" — the
+  # comma after "role:chess-prod-viewer" split what should've been one
+  # value into fragments). `values` has no such parsing, since it's a plain
+  # YAML string, not Helm's CLI-flag-style mini-syntax.
+  #
+  # role:<name>-viewer gets read-only "applications, get" on every
+  # AppProject this instance owns — root (defined above) plus one entry
+  # per var.app_projects key (apps-dev/apps-staging on shared, apps on
+  # prod) — then the final `g` line is what actually grants this role to
+  # the viewer account; without it the role would exist but nobody would
+  # hold it.
+  values = [
+    <<-YAML
+      configs:
+        rbac:
+          policy.csv: |
+            p, role:${var.name}-viewer, applications, get, ${var.name}-root/*, allow
+            %{~ for key in keys(var.app_projects) ~}
+            p, role:${var.name}-viewer, applications, get, ${var.name}-${key}/*, allow
+            %{~ endfor ~}
+            g, viewer, role:${var.name}-viewer
+    YAML
+  ]
+
   set = concat(
     [
       {
@@ -28,8 +65,20 @@ resource "helm_release" "argocd" {
         value = "false"
       },
       {
-        name  = "configs.secret.argocdServerAdminPassword"
-        value = data.aws_ssm_parameter.admin_password_hash.value
+        # Declares the account and its capabilities (argocd-cm) — not a
+        # secret itself, the password lives separately below in
+        # set_sensitive. "login" is enough for UI/password auth; no "apiKey"
+        # since this account has no CLI/API-token use case.
+        name  = "configs.cm.accounts\\.viewer"
+        value = "login"
+      },
+      {
+        # Explicit "no default role" — any account without its own `g` line
+        # above (e.g. a new account added later and forgotten in policy.csv)
+        # gets zero access, rather than depending on the chart's own default
+        # staying empty.
+        name  = "configs.rbac.policy\\.default"
+        value = ""
       }
     ],
     var.ingress_enabled ? [
@@ -85,6 +134,72 @@ resource "helm_release" "argocd" {
       }
     ] : []
   )
+
+  # Both password values happen to already be redacted in plan/console output
+  # via the SSM data source's own sensitivity marking (SecureString), but
+  # set_sensitive forces that regardless of where the value came from — it
+  # stays hidden even if a source is ever swapped for something not
+  # inherently marked sensitive (e.g. a plain variable).
+  set_sensitive = [
+    {
+      name  = "configs.secret.argocdServerAdminPassword"
+      value = data.aws_ssm_parameter.admin_password_hash.value
+    },
+    {
+      name  = "configs.secret.extra.accounts\\.viewer\\.password"
+      value = data.aws_ssm_parameter.viewer_password_hash.value
+    }
+  ]
+}
+
+# Scopes root_app itself — its only allowed destination is the argocd
+# namespace, where it creates ApplicationSet objects. Kept separate from the
+# apps projects below: root_app's job (create ApplicationSets) is a
+# different privilege than what those ApplicationSets generate (deploy
+# chess-chart into app namespaces).
+resource "kubectl_manifest" "app_project_root" {
+  depends_on = [helm_release.argocd]
+
+  yaml_body = <<-YAML
+    apiVersion: argoproj.io/v1alpha1
+    kind: AppProject
+    metadata:
+      name: ${var.name}-root
+      namespace: argocd
+    spec:
+      sourceRepos:
+        - ${var.repo_url}
+      destinations:
+        - server: https://kubernetes.default.svc
+          namespace: argocd
+  YAML
+}
+
+# One AppProject per var.app_projects entry — scopes the chess-chart
+# Applications each bucket's ApplicationSet generates. Split per namespace on
+# shared (apps-dev / apps-staging) so a bug in the auto-syncing dev bucket's
+# generator can't land an Application in staging: staging isn't in
+# apps-dev's destinations, so ArgoCD rejects the sync outright rather than
+# silently applying it.
+resource "kubectl_manifest" "app_project_apps" {
+  for_each   = var.app_projects
+  depends_on = [helm_release.argocd]
+
+  yaml_body = <<-YAML
+    apiVersion: argoproj.io/v1alpha1
+    kind: AppProject
+    metadata:
+      name: ${var.name}-${each.key}
+      namespace: argocd
+    spec:
+      sourceRepos:
+        - ${var.repo_url}
+      destinations:
+      %{~ for ns in each.value ~}
+        - server: https://kubernetes.default.svc
+          namespace: ${ns}
+      %{~ endfor ~}
+  YAML
 }
 
 # Root "app of apps" — the only ArgoCD object Terraform still owns directly.
@@ -93,7 +208,14 @@ resource "helm_release" "argocd" {
 # ArgoCD's own applicationset-controller take it from there. See
 # helm/git-ops/{shared,prod}/*.yaml for the actual bucket definitions.
 resource "kubectl_manifest" "root_app" {
-  depends_on = [helm_release.argocd]
+  # app_project_root must exist before root_app, since root_app's own
+  # spec.project references it directly. app_project_apps isn't a hard
+  # Terraform-level dependency (only the git-committed ApplicationSet YAML
+  # references those, applied later by ArgoCD's own controller, not by this
+  # resource) — included anyway so a fresh `apply` brings up the whole
+  # topology in one pass instead of leaving transient "project does not
+  # exist" errors for ArgoCD to retry past.
+  depends_on = [helm_release.argocd, kubectl_manifest.app_project_root, kubectl_manifest.app_project_apps]
 
   yaml_body = <<-YAML
     apiVersion: argoproj.io/v1alpha1
@@ -102,7 +224,7 @@ resource "kubectl_manifest" "root_app" {
       name: chess-gitops-root
       namespace: argocd
     spec:
-      project: default
+      project: "${var.name}-root"
       source:
         repoURL: ${var.repo_url}
         targetRevision: ${var.gitops_target_revision}

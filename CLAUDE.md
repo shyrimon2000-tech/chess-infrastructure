@@ -143,8 +143,8 @@ Single `general` NodePool — all chess services bin-packed on the same nodes.
 
 ### Networking
 
-- **EKS endpoint:** private only (`endpoint_public_access = false`)
-- **Access to cluster:** GitHub Actions self-hosted runner on ECS Fargate in private subnet (see GitHub Actions section)
+- **EKS endpoint:** public (`endpoint_public_access = true`), no CIDR restriction — GitHub-hosted runners have no fixed IP range to allowlist, so access control is enforced entirely via EKS access entries scoped to specific IAM principal ARNs (same mechanism as personal admin access), not network reachability.
+- **Access to cluster:** GitHub-hosted Actions runner, authenticated via AWS OIDC federation — no self-hosted runner needed now that the endpoint is public (see GitHub Actions section)
 - **Node access:** SSM Session Manager — no SSH, no port 22, sessions logged to CloudTrail
 - **NAT Gateway:** single NAT (known SPOF, acceptable for current stage)
 - **Security Groups:** created automatically by `terraform-aws-modules/eks/aws` — no manual SG resources needed
@@ -180,29 +180,23 @@ EBS CSI Driver required in both clusters:
 
 ## GitHub Actions CD Architecture
 
-Three-layer deployment model. Each layer is independent — no circular dependencies.
+Two independent pieces: infra apply (Terraform/Terragrunt, this section) and app delivery (ArgoCD, its own pipeline below).
 
-### Layer 0 — Bootstrap (GitHub-hosted runner)
-- **Workflow:** `bootstrap-infrastructure.yml`, trigger: `workflow_dispatch`
-- **Runner:** standard `ubuntu-latest` (GitHub-hosted, public internet)
-- **Auth:** AWS OIDC (no long-lived credentials)
-- **Does:** `terragrunt apply` for VPC + ECS runner infrastructure
-- **Why it can run here:** VPC and ECS don't require access to the EKS API
+### Infra apply — GitHub-hosted runner + OIDC
+- **Runner:** standard `ubuntu-latest` (GitHub-hosted, public internet) — no self-hosted runner. A self-hosted in-VPC runner (previously ECS Fargate) was only ever needed to reach a *private* EKS endpoint; once the endpoint is public, a GitHub-hosted runner can reach it directly.
+- **Auth:** AWS OIDC federation (`token.actions.githubusercontent.com`), no long-lived credentials. Trust policy scoped per branch — one IAM role trusted only for `ref:refs/heads/dev` (shared environment permissions) and a separate role trusted only for `ref:refs/heads/main` (prod environment permissions), so a workflow run on one branch can never assume the other environment's credentials.
+- **Trigger flow:** `pull_request` into `dev`/`main` runs a `terragrunt plan` job, required as a passing branch-protection status check before merge is allowed. Merging (`push` to `dev`/`main`) runs `terragrunt apply`. Plan never applies unreviewed changes; apply never runs without a passing plan on the merged commit.
+- **State isolation:** shared and prod are separate Terraform state files (S3 backend, distinct `key` per terragrunt unit) — a plan/apply on one environment can't race with or corrupt the other's state.
+- **State locking:** S3 backend native locking (`use_lockfile = true` in `root.hcl`) — no DynamoDB table needed; this is the current S3-backend locking mechanism, replacing the older DynamoDB-table pattern.
 
-### Layer 1 — Cluster provisioning (self-hosted Fargate runner)
-- **Workflow:** `deploy-cluster.yml`, trigger: `workflow_dispatch`
-- **Runner:** self-hosted, ECS Fargate task in private subnet (inside VPC)
-- **Does:** `terragrunt apply` for EKS → Karpenter → NodePools → ArgoCD bootstrap
-- **Why it needs VPC:** EKS endpoint is private — `helm` and `kubectl` providers must be in the same VPC
-
-### Layer 2 — Application delivery (ArgoCD)
+### App delivery — ArgoCD
 - **Trigger:** git push → ArgoCD watches repo
 - **Does:** syncs chess microservices, configs, secrets
 - **Runs on:** ArgoCD pod on Fargate (already inside the cluster)
 
 ### Key decisions
-- ECS Fargate runner chosen over WireGuard VPN: runner also solves CI/CD, not just access
-- ECS runner is independent of EKS (no circular dependency)
+- No self-hosted runner: once the EKS endpoint is public, the ECS Fargate runner's only reason to exist (private-VPC network access) no longer applies — dropping it also removes an entire category of bootstrap problems (custom runner image with terraform/kubectl/helm baked in, an EKS access entry + security-group rule for the runner, GitHub App runner-registration permissions). `terraform/modules/ecs-runner` and its `environments/{shared,prod}/ecs-runner` units (dead code left over from the earlier design) have been removed.
+- Public endpoint is a network-reachability change only, not an authorization change — access is still gated by EKS access entries scoped to specific IAM principal ARNs, same mechanism as before.
 - ArgoCD replaces any per-service apply workflow — Terraform only provisions infrastructure
 
 ## AWS Guidance

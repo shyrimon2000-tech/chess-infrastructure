@@ -10,6 +10,10 @@ hpa:
   maxReplicas: 3
   targetCPUUtilizationPercentage: 70
 
+rollingUpdate:
+  maxUnavailable: 0
+  maxSurge: 1
+
 resources:
   requests:
     cpu: "50m"

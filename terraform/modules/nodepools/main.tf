@@ -65,10 +65,10 @@ resource "null_resource" "wait_for_node_termination" {
   # Interpreter is parameterized (routed through triggers, since destroy-time
   # provisioners can only reference `self.*`), not hardcoded —
   # this provisioner runs on whatever machine is actually applying Terraform,
-  # which varies: a Linux CI runner (the eventual ecs-runner / GitHub Actions
-  # concept) has a real /bin/sh; this project is currently still applied from
-  # a Windows laptop, which doesn't. Three failed attempts taught real
-  # lessons about *which* shell actually exists before landing on this:
+  # which varies: the GitHub-hosted CI runner has a real /bin/sh; this
+  # project is also still applied from a Windows laptop sometimes, which
+  # doesn't. Three failed attempts taught real lessons about *which* shell
+  # actually exists before landing on this:
   #   1. `interpreter = ["/bin/sh", "-c"]` hardcoded — not a real Windows
   #      path, failed instantly (`exec: "/bin/sh": executable file not found`).
   #   2. No interpreter (OS default = cmd.exe on Windows) with a plain

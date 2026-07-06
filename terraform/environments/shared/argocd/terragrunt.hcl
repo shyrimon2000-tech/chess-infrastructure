@@ -75,5 +75,13 @@ inputs = {
   gitops_dir              = "shared"
   gitops_target_revision  = "dev"
 
+  # Split per namespace, not one combined project: dev's bucket auto-syncs
+  # with no human review, so its AppProject must not list staging as an
+  # allowed destination — see app_projects description in variables.tf.
+  app_projects = {
+    "apps-dev"     = ["dev"]
+    "apps-staging" = ["staging"]
+  }
+
   ingress_enabled = true
 }

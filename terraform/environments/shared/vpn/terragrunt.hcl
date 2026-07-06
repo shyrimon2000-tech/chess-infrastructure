@@ -35,5 +35,5 @@ inputs = {
   cluster_name     = dependency.eks.outputs.cluster_name
 
   # wg-easy panel password hash is read from SSM (/chess-shared/vpn/wg-easy-password-hash),
-  # created manually — same pattern as ecs-runner's GitHub App credentials.
+  # created manually — same pattern as the ArgoCD admin password hash.
 }
