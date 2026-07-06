@@ -96,6 +96,11 @@ jobs:
           # otherwise. Secret, not a plain repo variable: pairs the account
           # ID with a personal IAM username (see README Prerequisites).
           ADMIN_PRINCIPAL_ARN: ${{ secrets.ADMIN_PRINCIPAL_ARN }}
+          # TEMPORARY — debugging why dependencies show "has no outputs" in
+          # CI specifically (rules out: bucket policy — none exists; stale
+          # cache — a clean local cache reads real state fine). Remove once
+          # root cause is found.
+          TG_LOG: debug
         run: |
           status=0
           for unit in */; do
