@@ -135,7 +135,14 @@ module "eks" {
     }
   }
 
-  endpoint_public_access  = true # temporary: still applying from a laptop, not yet through the VPN — flip to false once VPN is actually applied and connected
+  # Permanently public (not a temporary laptop-access allowance) — the
+  # GitHub-hosted CI runner has no fixed IP to admit via a private-only
+  # endpoint + VPN, and no self-hosted in-VPC runner exists to reach a
+  # private endpoint instead (see CLAUDE.md's GitHub Actions CD
+  # Architecture / Networking sections). Authorization is still enforced
+  # via access entries scoped to specific IAM principal ARNs (admin_principal_arn,
+  # cicd_principal_arn below), not by network reachability.
+  endpoint_public_access  = true
   endpoint_private_access = true
 
   # false: this module's own "cluster_creator" access entry collided with AWS's
@@ -146,17 +153,30 @@ module "eks" {
   # comes only from the explicit access_entries.personal block below, unconditionally.
   enable_cluster_creator_admin_permissions = false
 
-  access_entries = var.admin_principal_arn != "" ? {
-    personal = {
-      principal_arn = var.admin_principal_arn
-      policy_associations = {
-        admin = {
-          policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
-          access_scope = { type = "cluster" }
+  access_entries = merge(
+    var.admin_principal_arn != "" ? {
+      personal = {
+        principal_arn = var.admin_principal_arn
+        policy_associations = {
+          admin = {
+            policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+            access_scope = { type = "cluster" }
+          }
         }
       }
-    }
-  } : {}
+    } : {},
+    var.cicd_principal_arn != "" ? {
+      cicd = {
+        principal_arn = var.cicd_principal_arn
+        policy_associations = {
+          admin = {
+            policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+            access_scope = { type = "cluster" }
+          }
+        }
+      }
+    } : {}
+  )
 
   tags = var.tags
 }

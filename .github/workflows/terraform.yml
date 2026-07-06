@@ -1,0 +1,124 @@
+name: Terraform CI/CD
+
+# plan on every PR into dev/main (required branch-protection check, nothing
+# applied) — apply only on manual workflow_dispatch, never automatically on
+# merge. This is a pet project torn down between sessions for cost, not
+# always-on infra: an apply-on-merge trigger would mean every dev/main merge
+# tries to (re)create a whole EKS cluster, which isn't wanted here.
+on:
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write # required for AWS OIDC federation
+  contents: read
+
+env:
+  TERRAFORM_VERSION: "1.15.7"
+  TERRAGRUNT_VERSION: "1.0.8"
+  AWS_REGION: "us-east-1"
+  # Role ARNs only pair the account ID with a plain role name, not a personal
+  # IAM username — safe to commit, unlike ADMIN_PRINCIPAL_ARN below (see
+  # README's Prerequisites section for why that one stays a secret).
+  SHARED_ROLE_ARN: "arn:aws:iam::221556121262:role/chess-shared-cicd"
+  PROD_ROLE_ARN: "arn:aws:iam::221556121262:role/chess-prod-cicd"
+
+jobs:
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # PR's target branch decides which environment: dev -> shared, main -> prod.
+      - name: Determine environment
+        id: env
+        run: |
+          if [ "${{ github.base_ref }}" = "dev" ]; then
+            echo "dir=terraform/environments/shared" >> "$GITHUB_OUTPUT"
+            echo "role_arn=${{ env.SHARED_ROLE_ARN }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=terraform/environments/prod" >> "$GITHUB_OUTPUT"
+            echo "role_arn=${{ env.PROD_ROLE_ARN }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.env.outputs.role_arn }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: |
+          curl -Lo /usr/local/bin/terragrunt "https://github.com/gruntwork-io/terragrunt/releases/download/v${{ env.TERRAGRUNT_VERSION }}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+
+      - name: Terragrunt plan
+        working-directory: ${{ steps.env.outputs.dir }}
+        env:
+          # Same value the personal `access_entries.personal` entry needs
+          # (see modules/eks) — without it, a plan run would show this
+          # entry being destroyed, since the CI role has no way to know it
+          # otherwise. Secret, not a plain repo variable: pairs the account
+          # ID with a personal IAM username (see README Prerequisites).
+          ADMIN_PRINCIPAL_ARN: ${{ secrets.ADMIN_PRINCIPAL_ARN }}
+        run: terragrunt run --all --non-interactive -- plan
+
+  apply:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # workflow_dispatch is triggered from a chosen branch — reuse that
+      # (github.ref_name) rather than a separate input, so the environment
+      # actually applied always matches the branch whose OIDC trust
+      # condition (ref:refs/heads/dev or .../main) let this run assume a
+      # role in the first place. Anything else fails closed.
+      - name: Determine environment
+        id: env
+        run: |
+          if [ "${{ github.ref_name }}" = "dev" ]; then
+            echo "dir=terraform/environments/shared" >> "$GITHUB_OUTPUT"
+            echo "role_arn=${{ env.SHARED_ROLE_ARN }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            echo "dir=terraform/environments/prod" >> "$GITHUB_OUTPUT"
+            echo "role_arn=${{ env.PROD_ROLE_ARN }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::workflow_dispatch must be run from the dev or main branch (got '${{ github.ref_name }}')"
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.env.outputs.role_arn }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: |
+          curl -Lo /usr/local/bin/terragrunt "https://github.com/gruntwork-io/terragrunt/releases/download/v${{ env.TERRAGRUNT_VERSION }}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+
+      - name: Terragrunt apply
+        working-directory: ${{ steps.env.outputs.dir }}
+        env:
+          ADMIN_PRINCIPAL_ARN: ${{ secrets.ADMIN_PRINCIPAL_ARN }}
+        run: terragrunt run --all --non-interactive -- apply -auto-approve

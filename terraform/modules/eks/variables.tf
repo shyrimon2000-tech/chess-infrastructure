@@ -30,3 +30,9 @@ variable "admin_principal_arn" {
   type        = string
   default     = ""
 }
+
+variable "cicd_principal_arn" {
+  description = "IAM principal ARN of the GitHub Actions OIDC role (modules/github-oidc) that applies Terraform against this cluster — granted the same cluster-admin access entry as admin_principal_arn, since helm/kubectl providers need Kubernetes-API authorization independent of the role's AWS IAM permissions"
+  type        = string
+  default     = ""
+}

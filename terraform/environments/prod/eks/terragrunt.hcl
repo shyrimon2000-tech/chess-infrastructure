@@ -16,6 +16,16 @@ dependency "vpc" {
   mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy"]
 }
 
+# Account-wide unit, not itself an environment — see terraform/environments/global.
+dependency "github_oidc" {
+  config_path = "../../global/github-oidc"
+
+  mock_outputs = {
+    prod_role_arn = "arn:aws:iam::000000000000:role/chess-prod-cicd"
+  }
+  mock_outputs_allowed_terraform_commands = ["plan", "validate", "init", "destroy"]
+}
+
 inputs = {
   cluster_name       = "chess-prod"
   vpc_id             = dependency.vpc.outputs.vpc_id
@@ -24,4 +34,9 @@ inputs = {
   # Never commit the real ARN (account ID + IAM username) — export before apply:
   # export ADMIN_PRINCIPAL_ARN=$(aws sts get-caller-identity --query Arn --output text)
   admin_principal_arn = get_env("ADMIN_PRINCIPAL_ARN", "")
+
+  # main branch's CI role — see modules/github-oidc. Needs its own EKS access
+  # entry (Kubernetes-API authorization) independent of its AWS IAM
+  # permissions, same reasoning as admin_principal_arn above.
+  cicd_principal_arn = dependency.github_oidc.outputs.prod_role_arn
 }
