@@ -7,7 +7,7 @@ data "aws_ssm_parameter" "al2023_ami" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 }
 
-# Created manually, same as ecs-runner's GitHub App credentials — Terraform only reads it.
+# Created manually, same as the ArgoCD admin password hash — Terraform only reads it.
 data "aws_ssm_parameter" "wg_easy_password_hash" {
   name            = local.wg_easy_password_ssm_path
   with_decryption = true

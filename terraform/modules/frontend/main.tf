@@ -177,8 +177,8 @@ resource "aws_cloudfront_distribution" "frontend" {
       https_port                = 8443
       origin_protocol_policy    = "https-only"
       origin_ssl_protocols      = ["TLSv1.2"]
-      origin_read_timeout       = 180
-      origin_keepalive_timeout  = 60
+      # Left unset - same account-specific quota issue as the "alb-api"
+      # origin above, see its comment and README Troubleshooting.
     }
   }
 

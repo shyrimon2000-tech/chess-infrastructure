@@ -50,6 +50,17 @@ This is controlled automatically via the `db.enabled` flag — no manual Network
 
 Game has the lowest CPU threshold (60%) because it handles real-time WebSocket connections — scaling earlier avoids latency spikes under load.
 
+### Rolling Update Strategy
+
+| Service | maxUnavailable | maxSurge |
+|---|---|---|
+| auth | 0 | 1 |
+| room | 0 | 1 |
+| game | 0 | 1 |
+| frontend | *(unset — Kubernetes default: 25%/25%)* | |
+
+`auth`/`room`/`game` all set explicit `strategy.rollingUpdate` (`values.yaml`'s new `rollingUpdate.maxUnavailable`/`maxSurge`, read by each service's `deployment.yaml`) rather than relying on the Kubernetes default (`25%` for both). `maxUnavailable: 0` means an old pod is never terminated until its replacement has passed `readinessProbe` and is `Ready` — zero-downtime, one pod swapped at a time (`maxSurge: 1` caps how many extra pods can exist mid-rollout). This matters most for `game`: a rollout that took down an active game-session pod before its replacement was ready would risk the same 30s-reconnect-timeout scored-loss scenario documented for Spot interruptions (see Terraform Karpenter NodePool section) — just triggered by a deploy instead of a node eviction. `frontend` is left at the Kubernetes default since it's stateless static content (and only runs as a container Deployment at all in dev/staging — prod serves it from S3 + CloudFront, no Deployment involved).
+
 ### ResourceQuota
 
 | | Dev | Staging | Prod |
@@ -65,7 +76,7 @@ Prod quota is lower than staging despite having HPA enabled — no in-cluster My
 
 **Dev / Staging** — internal only, not exposed to the internet.
 
-- **CI/CD access** — self-hosted ECS Fargate runner in private subnet (runs `terragrunt apply`, `helm`, `kubectl`)
+- **CI/CD access** — GitHub-hosted Actions runner, AWS OIDC federation, no self-hosted runner (see GitHub Actions CD section)
 - **Admin/developer access** — WireGuard VPN into the VPC (`vpn-shared.<domain>` / `vpn-prod.<domain>`, wg-easy + Caddy on EC2 in the public subnet, SSM-only — no SSH). Split-tunnel: only the VPC CIDR routes through the tunnel, not `0.0.0.0/0`.
 
 Hostnames (Route53 private hosted zone `chess.internal`, associated with the shared VPC):
@@ -81,8 +92,8 @@ All three point to the same internal NLB (ingress-nginx on Fargate). Traffic sta
 
 - [x] Kubernetes manifests — secrets, configmaps, statefulsets, deployments, services, ingress, network policies, resource quota, limit range
 - [x] Helm charts — packaging manifests for reusable deployment
-- [x] Terraform — cloud infrastructure provisioning (VPC, EKS, Karpenter, NodePools, ECS runner)
-- [ ] GitHub Actions — CD pipeline (3-layer architecture, ECS runner written)
+- [x] Terraform — cloud infrastructure provisioning (VPC, EKS, Karpenter, NodePools)
+- [x] GitHub Actions — CD pipeline (OIDC-federated, plan-on-PR/apply-on-dispatch — see GitHub Actions CD section)
 
 ## Terraform
 
@@ -104,12 +115,12 @@ Not committed on purpose: it pairs your AWS account ID with a specific IAM usern
 
 | Path | Used by |
 |---|---|
-| `/chess-shared/github-runner/app-id`, `/chess-shared/github-runner/app-private-key` | ecs-runner (GitHub App credentials) |
-| `/chess-prod/github-runner/app-id`, `/chess-prod/github-runner/app-private-key` | ecs-runner (GitHub App credentials) |
 | `/chess-shared/vpn/wg-easy-password-hash` | vpn (wg-easy admin panel login) |
 | `/chess-prod/vpn/wg-easy-password-hash` | vpn (wg-easy admin panel login) |
 | `/chess-shared/argocd/admin-password-hash` | argocd (`admin` login for the ArgoCD UI) |
 | `/chess-prod/argocd/admin-password-hash` | argocd (`admin` login for the ArgoCD UI) |
+| `/chess-shared/argocd/viewer-password-hash` | argocd (`viewer` read-only login, RBAC per environment — see ArgoCD RBAC section) |
+| `/chess-prod/argocd/viewer-password-hash` | argocd (`viewer` read-only login, RBAC per environment — see ArgoCD RBAC section) |
 | `/chess-prod/rds/master-password` | rds (`admin` login for the RDS instance — used by chess-chart's `rds-bootstrap` Helm hook Job to create the three per-service databases/users, and by you directly for manual DB admin access over the VPN) |
 | `/chess-prod/jwt-secret-key` | rds (written into `/chess-prod/auth`'s `JWT_SECRET_KEY`, and re-exposed as an output for the future `elasticache` module to reuse for `/chess-prod/room`/`/chess-prod/game` — all three services must share one signing key) |
 
@@ -156,7 +167,7 @@ terraform/
 │   ├── eks/                        # EKS cluster + Fargate profiles + personal access entry
 │   ├── karpenter/                  # Karpenter IAM + SQS + Helm chart
 │   ├── nodepools/                  # EC2NodeClass + NodePool CRDs
-│   ├── ecs-runner/                 # Self-hosted GitHub Actions runner on ECS Fargate
+│   ├── github-oidc/                # GitHub Actions OIDC provider + per-branch IAM roles (account-wide, see terraform/environments/global)
 │   ├── ingress-nginx/              # Internal NLB ingress controller (shared only)
 │   ├── route53/                    # Private hosted zone (chess.internal) — dev/staging/argocd records
 │   ├── vpn/                        # WireGuard (wg-easy + Caddy) — SSM-only EC2, public subnet
@@ -168,12 +179,13 @@ terraform/
 │   ├── alb-controller/             # AWS Load Balancer Controller (IRSA + Helm), prod only
 │   └── external-dns/               # ExternalDNS (IRSA + Helm), prod only
 └── environments/
+    ├── global/                     # account-wide, not tied to shared or prod
+    │   └── github-oidc/            # OIDC provider + per-branch CI roles — excluded from run-all destroy
     ├── shared/                     # dev + staging (one cluster, separate namespaces)
     │   ├── vpc/                    # 10.0.0.0/16
     │   ├── eks/                    # chess-shared cluster
     │   ├── karpenter/              # Karpenter on Fargate
     │   ├── nodepools/              # Spot instances
-    │   ├── ecs-runner/             # Fargate runner in shared VPC — excluded from run-all, building last
     │   ├── ingress-nginx/          # internal NLB
     │   ├── route53/                # chess.internal private zone
     │   ├── vpn/                    # vpn-shared.<domain>
@@ -184,7 +196,6 @@ terraform/
         ├── eks/                    # chess-prod cluster
         ├── karpenter/              # Karpenter on Fargate
         ├── nodepools/              # on-demand instances
-        ├── ecs-runner/             # not wired up — see GitHub Actions CD section
         ├── ingress-nginx/          # internal NLB, ArgoCD-only (chess services use the public ALB instead)
         ├── route53/                # chess-prod.internal private zone, argocd record only
         ├── vpn/                    # vpn-prod.<domain>
@@ -197,13 +208,11 @@ terraform/
         └── external-dns/           # depends only on eks — watches Ingress, writes Route53 records
 ```
 
-Apply order (Layer 0 — GitHub-hosted runner): `vpc → ecs-runner` — **not built**. `ecs-runner` (`exclude { if = true, actions = ["all"] }`, skipped by `run-all`) exists in this repo as a documented *concept* for the eventual self-hosted-runner CD pipeline (see GitHub Actions CD section), not as a near-term deliverable — deprioritized given the deadline, since nothing in the actual requirements depends on *how* Terraform gets applied, only on the resulting infrastructure state.
-
-Apply order (Layer 1 — self-hosted Fargate runner, or a laptop while `endpoint_public_access = true`): `eks → vpn → karpenter → nodepools → ingress-nginx → route53 → argocd` (`eso` only depends on `eks` now that it runs on its own Fargate profile — see ESO section — so it can apply any time after `eks`, not necessarily last) — same shape for both shared and prod now; prod's `ingress-nginx`/`route53` exist solely to keep ArgoCD VPN-only, not for app traffic (that's the public ALB, applied independently).
+Apply order: `global/github-oidc` (once, account-wide, ahead of everything — see GitHub Actions CD section) → `vpc → eks → vpn → karpenter → nodepools → ingress-nginx → route53 → argocd` (`eso` only depends on `eks` now that it runs on its own Fargate profile — see ESO section — so it can apply any time after `eks`, not necessarily last) — same shape for both shared and prod now; prod's `ingress-nginx`/`route53` exist solely to keep ArgoCD VPN-only, not for app traffic (that's the public ALB, applied independently).
 
 **`nodepools` must apply before `argocd`, `ingress-nginx` can safely apply** — not a hard Terraform dependency for those two, but karpenter/nodepools existing means real EC2 nodes can actually be provisioned once something needs one. `eks` itself must not create anything whose pods can only schedule on EC2 (see EBS CSI Driver note below) for exactly this reason. (`eso` used to be in this list too, before it moved to its own Fargate profile.)
 
-EKS API endpoint is currently `endpoint_public_access = true` — temporary, while still applying from a laptop and before the VPN module has actually been applied and connected. `vpc`, `eks`, and `vpn` only call AWS APIs, so they can be applied from anywhere regardless. `karpenter`, `nodepools`, `ingress-nginx`, `argocd`, and `eso` use the `helm`/`kubectl` Terraform providers, which need a live connection to the cluster's Kubernetes API — once the VPN is applied and connected, flip `endpoint_public_access` to `false` and apply those only through the tunnel (or from the ECS runner, which already sits inside the VPC).
+EKS API endpoint is permanently `endpoint_public_access = true` (see Networking/GitHub Actions CD sections for why — no self-hosted, in-VPC runner exists to reach a private endpoint instead) — `vpc`, `eks`, and `vpn` only call AWS APIs regardless, but `karpenter`, `nodepools`, `ingress-nginx`, `argocd`, and `eso` use the `helm`/`kubectl` Terraform providers, which need this endpoint reachable from wherever the apply actually runs (a laptop or the GitHub-hosted CI runner) — same reason those units also need an EKS access entry (`admin_principal_arn` or `cicd_principal_arn`) alongside plain AWS API permissions.
 
 ### Architectural Decisions
 
@@ -222,7 +231,7 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 | Fargate | Karpenter controller, ArgoCD, Grafana, CoreDNS, ingress-nginx (shared only), ESO, AWS Load Balancer Controller + ExternalDNS (prod only) | Fargate micro-VM per pod |
 | EC2 (Karpenter) | All chess microservices, Prometheus | Spot (shared) / on-demand (prod) |
 
-- API endpoint: currently `endpoint_public_access = true` (temporary, still applying from a laptop). Will be set to private-only once the VPN is applied and connected — or the ECS runner is in place, whichever comes first.
+- API endpoint: permanently `endpoint_public_access = true` — see GitHub Actions CD section for why (no self-hosted runner exists to reach a private endpoint instead).
 - IRSA used for Karpenter and EBS CSI Driver (pod identity agent not available on Fargate at time of writing)
 - Addons created in the `eks` module: CoreDNS, kube-proxy, VPC CNI
   - CoreDNS runs on Fargate via `kube-system` Fargate profile (label: `k8s-app=kube-dns`) — bootstraps DNS before Karpenter provisions EC2 nodes
@@ -307,6 +316,20 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 - No verified community Terraform module exists for ArgoCD — installed via raw `helm_release` (argo-helm chart), same as Karpenter
 - `argocd` (prod) has four ordering-only terragrunt dependencies, all output-unused, existing purely to fix apply order: `ingress-nginx` (its own Ingress needs that controller's admission webhook ready — see **Troubleshooting → "Addons stuck waiting for compute that doesn't exist yet"**), and `rds` + `elasticache` + `alb-controller` (chess-chart's `rds-bootstrap` Helm hook Job and ALB `Ingress` objects would otherwise be able to sync before their prerequisites exist — see **Troubleshooting → "RDS bootstrap without a VPN/private-VPC dependency"**). Structural mitigation, not a hard guarantee — prod's sync is manual, so a human could still trigger a sync too early once ArgoCD exists.
 
+**ArgoCD RBAC**
+- Three layers, all written now — same shape as Kubernetes RBAC, just without a literal cluster/namespace binding: AppProject ≈ `Role` (a named set of permissions, scoped to an object pattern instead of a namespace), the `g` policy line ≈ `RoleBinding` (binds a subject to that role), and a role with no object-pattern restriction (or `project: default`) ≈ `ClusterRole`/`ClusterRoleBinding`.
+  1. **AppProject** — scopes *what* an `Application` is allowed to touch (source repo, destination namespace), enforced by ArgoCD itself at sync time. **Done.**
+  2. **Local account (`viewer`)** — a login identity, declared in `configs.cm`, password (SSM-backed bcrypt hash, same pattern as admin) set via `set_sensitive`. **Done.**
+  3. **RBAC policy (`configs.rbac.policy.csv` + `policy.default`)** — scopes *who* can do *what* against a given AppProject. **Done.**
+- **Why AppProject exists on top of the git-folder/branch split that already separates environments:** `gitops_dir`/`gitops_target_revision` only control *which git content* an ArgoCD instance reads — they say nothing about what ArgoCD is allowed to *do* with that content once read. Every `Application`/`ApplicationSet` previously ran under `project: default`, which has no restrictions at all (any repo, any namespace, any resource kind). AppProject is a second, independent guardrail enforced by the ArgoCD controller at sync time, regardless of how the content got there — it catches mistakes the git-folder split can't, e.g. a typo'd `namespace:` in a generator template.
+- **`kubectl_manifest.app_project_root`** (one per instance) — scopes `root_app` itself to destination `namespace: argocd` only, since that's the only place it ever needs to create `ApplicationSet` objects.
+- **`kubectl_manifest.app_project_apps`** (`for_each` over `var.app_projects`, a `map(list(string))` set per-environment via terragrunt) — one AppProject per map entry, scoping the actual chess-chart `Application`s each bucket's `ApplicationSet` generates. Shared splits this **per namespace** (`apps-dev` → `[dev]`, `apps-staging` → `[staging]`) rather than one combined project covering both: dev's bucket is `automated: true` (auto-sync, no human review), so a bug in its generator template that emitted the wrong `namespace:` would otherwise sync straight into staging with no guardrail — splitting means staging simply isn't a valid destination for anything `apps-dev`-scoped, so ArgoCD rejects the sync outright. Prod has only one namespace (`production`), so no split is needed there (`var.app_projects = { "apps" = ["production"] }`).
+- Both AppProject resources are Terraform-owned (`kubectl_manifest`, same as `root_app`) rather than hand-written git YAML — this is environment *topology* (which projects exist, their boundaries), the same category of thing `root_app` itself already is, not deploy content.
+- `root_app`'s `depends_on` includes `app_project_root` (hard dependency — `root_app`'s own `spec.project` references it directly) and `app_project_apps` (soft — nothing Terraform-owned references these directly, only the hand-written `ApplicationSet` YAML in git does, applied later by ArgoCD's own controller — included anyway so a fresh apply brings up the whole topology in one pass instead of ArgoCD retrying past a transient "project does not exist" error).
+- **`viewer` account** — `configs.cm.accounts\.viewer: "login"` (capability declaration, not a secret) plus `configs.secret.extra.accounts\.viewer\.password` (bcrypt hash from a new `/${var.name}/argocd/viewer-password-hash` SSM parameter, same manual-bootstrap pattern as the admin password). Both this and the admin password moved to `set_sensitive` (rather than plain `set`) for an explicit redaction guarantee independent of the SSM data source's own sensitivity marking.
+- **RBAC policy** — one `configs.rbac.policy\.csv` value per instance: a `p` line for `${var.name}-root/*`, one more `p` line per `var.app_projects` key (generated via the same `%{ for %}` template pattern as the AppProject destinations, so it scales automatically with however many entries that map has), and a final `g, viewer, role:${var.name}-viewer` line binding the account to the role — without that last line the role would exist with no one holding it. `configs.rbac.policy\.default` is set to `""` explicitly (rather than left to the chart's own default) so any account added later without its own `g` line gets zero access rather than an unreviewed fallback.
+- **Status:** `terragrunt validate` passes on both `shared` and `prod` for all three layers; the generated AppProject `yaml_body` was rendered and checked independently (outside the `kubectl` provider, which needs a real cluster CA cert to configure — the `eks` dependency's mock output isn't valid PEM, so a real `plan`/`apply` isn't possible pre-cluster). **Not yet applied against a live cluster** — unverified whether `viewer` can actually log in and see only its scoped projects until a real `helm_release`/`kubectl_manifest` apply happens against a live EKS cluster.
+
 **ESO — External Secrets Operator**
 - `helm_release` (chart `external-secrets/external-secrets`) + `kubectl_manifest` for `ClusterSecretStore`, same bootstrap pattern as ArgoCD's `ApplicationSet`
 - One IRSA role per environment, scoped to `ssm:GetParameter[s][ByPath]` on `arn:...:parameter/${var.name}/*` — shared's role can only read `/chess-shared/*`, prod's only `/chess-prod/*`, no cross-environment access even by mistake
@@ -324,7 +347,7 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 | EKS (shared + prod) | verified working (shared) — see Troubleshooting for the DNS/security-group bug — **currently torn down** |
 | Karpenter (shared + prod) | verified working (shared) — **currently torn down** |
 | NodePools (shared + prod) | verified working (shared) — owns EBS CSI Driver addon + `gp3` StorageClass — **currently torn down** |
-| ECS runner (shared + prod) | **not built — documented concept only**, deprioritized given the deadline (see Apply order note above) |
+| GitHub Actions OIDC CI/CD | **built and applied 2026-07-06** — provider + per-branch roles + EKS access entries (verified live against `chess-prod`), `terraform.yml` workflow (plan-on-PR, apply-on-dispatch). See GitHub Actions CD section |
 | ingress-nginx (shared + prod) | verified working (shared) — prod unit newly written, not yet applied — **currently torn down** |
 | Route53 private zone (shared + prod) | verified working (shared, `dev`/`staging`/`argocd.chess.internal`) — prod unit (`chess-prod.internal`, argocd-only) newly written, not yet applied — **currently torn down** |
 | VPN — WireGuard (shared + prod) | verified working (shared) — **currently torn down** |
@@ -335,7 +358,7 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 | ALB Ingress Controller (prod) | module written (`terraform/modules/alb-controller`), `terragrunt validate` passes — controller itself not yet (re-)applied since the 2026-07-04 security-group fix (443, was 80) and Service-webhook race fix (`enableServiceMutatorWebhook = false`). Real ALB won't exist until chess-chart is deployed via ArgoCD (see ALB/ExternalDNS section) — end-to-end `/api/*` routing through CloudFront unverified until then |
 | Origin mTLS (prod) | `terraform/modules/origin-mtls` — **applied 2026-07-04**. Self-signed CA + client cert + ALB trust store + ALB's own server cert, excluded from `run --all destroy` for ARN stability (see ALB/ExternalDNS section). ARNs copied into `values-prod.yaml`; not yet verified end-to-end against a live ALB |
 | ExternalDNS (prod) | module written (`terraform/modules/external-dns`), `terragrunt validate` passes — not yet applied |
-| ArgoCD RBAC per environment | not started — **required by interview task** |
+| ArgoCD RBAC per environment | All three layers written — **AppProject** (root + per-namespace apps projects, shared split dev/staging), **`viewer` local account** (SSM-backed password, same pattern as admin), **RBAC policy** (`policy.csv` + explicit empty `policy.default`) — `terragrunt validate` passes both envs. **Not yet applied against a live cluster** — required by interview task, see ArgoCD RBAC section above for what's unverified |
 | Route53 public zone (prod) | not started |
 | S3 + CloudFront (prod frontend) | `terraform/modules/frontend` — **applied 2026-07-04**, origin switched to `https-only` + origin mTLS (see ALB/ExternalDNS section) |
 
@@ -343,19 +366,27 @@ No managed node groups. System components run on Fargate, app workloads on EC2 p
 
 ## GitHub Actions CD
 
-**Design concept, not yet built.** Given the deadline, this stayed a documented architecture rather than a near-term deliverable — the actual application CI (build/test/push each microservice's image) already exists independently in each microservice's own repo (GitHub Actions → GHCR), which is what the interview task's CI requirement actually needs. This section describes how *infrastructure* deployment (`terragrunt apply`) would eventually move off a laptop and into CI, not something currently running.
+**Built and applied 2026-07-06.** Earlier design (self-hosted ECS Fargate runner, 3-layer bootstrap, private-only EKS endpoint) was abandoned and its module (`terraform/modules/ecs-runner`) removed entirely — see CLAUDE.md's Networking section for why. Current design needs no self-hosted runner at all.
 
-Three-layer deployment model. Each layer is independent — no circular dependencies.
+**`terraform/modules/github-oidc`** (`terraform/environments/global/github-oidc`, account-wide — not tied to shared or prod, excluded from `run --all destroy`):
+- One `aws_iam_openid_connect_provider` for `token.actions.githubusercontent.com` (imported, not created fresh — a provider for this exact issuer already existed in the account from an earlier, abandoned attempt at OIDC for the frontend's own S3 deploy pipeline, 2026-07-04; that pipeline ended up using a static IAM user key instead, left this provider orphaned with nothing built on it)
+- Two IAM roles, trust policy scoped per branch via the `sub` claim: `chess-shared-cicd` (`ref:refs/heads/dev`) and `chess-prod-cicd` (`ref:refs/heads/main`) — a workflow run on one branch can never assume the other's role
+- Permissions: one inline policy per role (not attached managed policies — IAM's `PoliciesPerRole` quota is 10, and this needs 16 action prefixes; inline policies don't count against that quota). Service-scoped (`ec2:*`, `eks:*`, `rds:*`, `elasticache:*`, `s3:*`, `cloudfront:*`, `acm:*`, `route53:*`, `elasticloadbalancing:*`, `iam:*`, `ssm:*`, `sqs:*`, `events:*`, `wafv2:*`/`waf:*`/`waf-regional:*` — the last three for planned-but-not-yet-built WAF), not `AdministratorAccess` — verified against every `resource "aws_*"` in every module plus what the community VPC/EKS/Karpenter/IRSA modules provision, and against AWS's own managed-policy docs (no managed policy exists for EKS cluster-lifecycle actions at all — `AmazonEKSClusterPolicy` and siblings are for the cluster/node's own service role, not a caller of `eks:CreateCluster`)
 
-| Layer | Workflow | Runner | Does |
-|---|---|---|---|
-| 0 — Bootstrap | `bootstrap-infrastructure.yml` | GitHub-hosted (`ubuntu-latest`) | `terragrunt apply` for VPC + ECS runner |
-| 1 — Cluster | `deploy-cluster.yml` | Self-hosted ECS Fargate (private subnet) | `terragrunt apply` for EKS → Karpenter → NodePools |
-| 2 — App delivery | ArgoCD (git push trigger) | ArgoCD pod on Fargate | Syncs chess microservices |
+**EKS access entries** (`modules/eks`'s new `cicd_principal_arn` input, wired from `github-oidc`'s outputs in both `shared/eks` and `prod/eks` terragrunt units): AWS IAM permissions above only cover the *AWS API* surface (`eks:CreateCluster` etc.) — they say nothing about whether that role can actually authenticate against the cluster's *Kubernetes* API, which every `helm_release`/`kubectl_manifest` resource needs. Each CI role gets its own `AmazonEKSClusterAdminPolicy` access entry, same mechanism and same policy as the existing personal `admin_principal_arn` entry. Applied and verified live against `chess-prod` (`aws eks list-access-entries` confirms both `chess-prod-cicd` and the personal entry coexist) — `chess-shared` isn't currently running, so its equivalent entry will apply the next time shared is spun up from scratch, not as a separate step.
 
-Layer 0 uses a standard GitHub-hosted runner because VPC and ECS runner do not require access to the EKS private API. Once the ECS runner is provisioned, Layer 1 runs inside the VPC where the private EKS endpoint is reachable.
+**`.github/workflows/terraform.yml`:**
+- `pull_request` into `dev`/`main` → `plan` job only (required branch-protection check, nothing applied) — environment picked from `github.base_ref`
+- `workflow_dispatch` (manual, run from either branch) → `apply` job — environment picked from `github.ref_name`, **not** a separate input, so it can never mismatch which role the branch's OIDC trust condition actually lets it assume
+- Deliberately **no apply-on-merge trigger**: this is a project torn down between sessions for cost (see Progress table), not always-on infra — an apply-on-merge trigger would mean every merge tries to (re)create a whole EKS cluster, which isn't wanted here. Contrast with each microservice's own CI (e.g. `chess-auth-service/.github/workflows/ci.yml`): same `pull_request`-runs-checks-only principle, but their mutating step (`publish` to GHCR) gates on a *version tag* push since that's what "merged and released" means for an image; here it gates on `workflow_dispatch` since there's no equivalent release concept for a Terraform apply
+- `ADMIN_PRINCIPAL_ARN` passed into both `plan` and `apply` via a GitHub Actions **secret**, not a plain repo variable — without it, the CI role's own apply would see the personal `access_entries.personal` entry missing from desired config and destroy it. Secret (not variable) for the same reason it's not committed for local applies either: pairs the account ID with a personal IAM username, more targeted than the account ID alone (already public via the state bucket name)
+- Role ARNs (`SHARED_ROLE_ARN`/`PROD_ROLE_ARN`) are hardcoded plain values in the workflow, not secrets — a role ARN only pairs the (already-public) account ID with a role *name* we chose ourselves, no personal identity attached, unlike `ADMIN_PRINCIPAL_ARN`
 
-Auth: AWS OIDC — no long-lived credentials stored in GitHub secrets.
+**Manual one-time setup** (not something Terraform or the workflow does for you):
+1. GitHub repo secret `ADMIN_PRINCIPAL_ARN` — Settings → Secrets and variables → Actions → New repository secret, same value as the local `ADMIN_PRINCIPAL_ARN` env var (`aws sts get-caller-identity --query Arn --output text`)
+2. Branch protection on `dev` and `main` — Settings → Branches → require the `plan` job as a passing status check before merge
+
+Both done 2026-07-06. Not yet done: an actual PR has never been run through this pipeline end-to-end.
 
 ---
 
@@ -690,7 +721,7 @@ Checked, not an issue here:
 **Options considered and rejected, in order:**
 1. **A wrapper script that brings up the WireGuard tunnel before `terragrunt apply`/`destroy`, universal for local and CI** — works, but only relocates the dependency, doesn't remove it. Also surfaced a real fragility: the `vpn` module's EC2 instance has no persistent storage, so every time it's destroyed and rebuilt (this project routinely tears the whole environment down between sessions for cost — see Progress table), wg-easy generates a brand-new server keypair and peer database, silently invalidating any previously-saved client `.conf`. A durable fix would need either manual peer re-provisioning after every rebuild, or automating it against wg-easy's own REST API — which its own docs describe as "not yet stable... subject to change without notice."
 2. **`aws ssm start-session --document-name AWS-StartPortForwardingSessionToRemoteHost`** — narrower and more auditable than a full VPN (IAM-scoped access to a specific instance, no shared secret file that can leak, every session logged to CloudTrail, same trust model this project already uses for SSM-only node access, no SSH). Still just relocates the live-connection requirement rather than removing it.
-3. **Building the real `ecs-runner`** (self-hosted, natively inside the VPC, no VPN needed for anything) — architecturally the industry-standard answer to "CI needs private network access," and already a documented (not-yet-built) module in this repo. Explicitly not the direction chosen here — no self-hosted runner is planned.
+3. **Building a self-hosted, in-VPC runner** — architecturally the industry-standard answer to "CI needs private network access." Explicitly not the direction chosen here (see GitHub Actions CD section: the EKS endpoint went public instead, removing the need for private network access entirely) — the module written for this (`ecs-runner`) was later deleted as dead code.
 
 **The actual fix: remove the live-connection requirement instead of routing around it.** `terraform/modules/rds` no longer has a `mysql` provider or `mysql_database`/`mysql_user`/`mysql_grant` resources at all — it only ever *decided* the desired per-service database name/username/password (`random_password` + a naming convention) and *published* that decision to SSM (`auth_secret`; room/game via `elasticache`); it never actually needed to open a MySQL connection to do that part. What used to need a live connection — actually creating the database/user/grant against the real instance — moved to a new Helm hook Job in chess-chart:
 
@@ -702,7 +733,7 @@ Checked, not an issue here:
 - `terraform/environments/prod/rds/terragrunt.hcl` — dropped its `dependency "vpn"` block (added originally only because the `mysql` provider needed a live connection on *destroy* too, to keep `vpn` alive until `rds` finished tearing down). Back to depending on `vpc` alone, restoring RDS's original apply-time parallelism with `eks`/`karpenter`/`nodepools`.
 - `terraform/environments/prod/argocd/terragrunt.hcl` — added three ordering-only dependencies, all output-unused: `rds` (bootstrap Job needs `auth`'s `DATABASE_URL` + the master password), `elasticache` (same Job also needs `room`/`game`'s `DATABASE_URL`, which `elasticache` writes — `rds` deliberately doesn't, see its own SSM-ownership note above), and `alb-controller` (chess-chart's own `Ingress` objects use `ingressClassName: alb`, and the controller's Ingress-validating webhook must be up first — same race class as the existing `argocd → ingress-nginx` dependency, just a different controller). Prod's manual sync policy already gates all of this in practice (a human decides when to sync), but these dependencies make it structurally impossible for ArgoCD to even exist before its prerequisites do, rather than relying only on nobody syncing too early. Audited the full prod dependency graph afterward (`grep` across every `terraform/environments/prod/*/terragrunt.hcl`) to confirm no other gaps of this shape remain and no cycles were introduced.
 
-**Result:** RDS's own `terraform apply`/`destroy` needs no VPN, no `ecs-runner`, and no SSM tunnel at all — it's pure AWS API, works identically from a laptop or a GitHub-hosted runner. The only remaining reason to want VPN access to RDS is optional, occasional human debugging (connect with any MySQL client using the master password), not automation.
+**Result:** RDS's own `terraform apply`/`destroy` needs no VPN, no self-hosted runner, and no SSM tunnel at all — it's pure AWS API, works identically from a laptop or the GitHub-hosted CI runner. The only remaining reason to want VPN access to RDS is optional, occasional human debugging (connect with any MySQL client using the master password), not automation.
 
 ---
 
@@ -825,7 +856,7 @@ Always declare `resources` on every container you control — including initCont
 
 **Symptom:** After fixing initContainer resources and running `kubectl apply`, the deployment stays at partial replicas. New pods fail with quota exceeded despite the fix.
 
-**Cause:** The existing pod was created before the fix and still holds quota based on old resource specs. Rolling update cannot proceed: it needs to create a new pod first (maxUnavailable=0 by default), but quota is blocked by the old pod's inflated reservation.
+**Cause:** The existing pod was created before the fix and still holds quota based on old resource specs. Rolling update cannot proceed: it needs to create a new pod first (`maxUnavailable: 0`, explicit for auth/room/game — see Rolling Update Strategy above), but quota is blocked by the old pod's inflated reservation.
 
 **Solution:** Scale to 0, then back to the desired replica count:
 ```bash
