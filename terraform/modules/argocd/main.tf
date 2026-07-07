@@ -199,6 +199,15 @@ resource "kubectl_manifest" "app_project_apps" {
         - server: https://kubernetes.default.svc
           namespace: ${ns}
       %{~ endfor ~}
+      # Applications in this project sync with CreateNamespace=true — without
+      # this whitelist entry, ArgoCD refuses the PreSync Namespace create with
+      # "resource :Namespace is not permitted in project", but only on a
+      # namespace that doesn't already exist yet. Never surfaced on prod
+      # because its target namespaces were created out-of-band before ArgoCD
+      # ever synced into them; shared's dev/staging were not.
+      clusterResourceWhitelist:
+        - group: ""
+          kind: Namespace
   YAML
 }
 
