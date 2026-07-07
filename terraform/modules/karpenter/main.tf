@@ -60,6 +60,23 @@ resource "helm_release" "karpenter" {
     {
       name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
       value = module.karpenter.iam_role_arn
+    },
+    # Chart ships with no default here, and this controller runs on Fargate —
+    # without an explicit request, Fargate sizes the pod's micro-VM at its own
+    # minimum, too small for Karpenter's startup (dozens of controllers, some
+    # with worker counts up to 1000). CPU starvation during startup means
+    # /readyz can't answer within its 30s probe timeout, so kubelet restarts
+    # the container before it ever stabilizes — confirmed live on chess-prod
+    # (both replicas CrashLoopBackOff, 47h, 100+ restarts each, Karpenter never
+    # actually running long enough to reconcile anything, including
+    # consolidating a long-idle node).
+    {
+      name  = "controller.resources.requests.cpu"
+      value = "1"
+    },
+    {
+      name  = "controller.resources.requests.memory"
+      value = "1Gi"
     }
   ]
 }
