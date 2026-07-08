@@ -69,10 +69,10 @@ ingress:
 # (see Troubleshooting: "Fewer replicas running than desired").
 resourcequota:
   hard:
-    requests.cpu: "2350m"
-    requests.memory: "2828Mi"
-    limits.cpu: "5050m"
-    limits.memory: "5556Mi"
+    requests.cpu: "2400m"
+    requests.memory: "2956Mi"
+    limits.cpu: "5200m"
+    limits.memory: "5812Mi"
 
 frontend:
   enabled: false
@@ -85,6 +85,8 @@ secret:
 
 auth:
   hpa:
+    enabled: true
+  pdb:
     enabled: true
   secret:
     enabled: false
@@ -100,6 +102,8 @@ auth:
 room:
   hpa:
     enabled: true
+  pdb:
+    enabled: true
   secret:
     enabled: false
   externalSecret:
@@ -114,6 +118,8 @@ room:
 
 game:
   hpa:
+    enabled: true
+  pdb:
     enabled: true
   secret:
     enabled: false

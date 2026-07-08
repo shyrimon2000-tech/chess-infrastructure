@@ -39,10 +39,10 @@ ingress:
 
 resourcequota:
   hard:
-    requests.cpu: "2180m"
-    requests.memory: "4100Mi"
-    limits.cpu: "3650m"
-    limits.memory: "5200Mi"
+    requests.cpu: "2230m"
+    requests.memory: "4228Mi"
+    limits.cpu: "3800m"
+    limits.memory: "5456Mi"
 
 limitrange:
   limits:

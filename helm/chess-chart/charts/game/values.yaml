@@ -14,6 +14,10 @@ rollingUpdate:
   maxUnavailable: 0
   maxSurge: 1
 
+pdb:
+  enabled: false
+  maxUnavailable: 1
+
 resources:
   requests:
     memory: "256Mi"
