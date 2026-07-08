@@ -2,12 +2,12 @@ image:
   repository: ghcr.io/shyrimon2000-tech/chess-auth-service
   tag: "1.0.0"
 
-replicaCount: 1
+replicaCount: 2
 
 hpa:
   enabled: false
-  minReplicas: 1
-  maxReplicas: 3
+  minReplicas: 2
+  maxReplicas: 4
   targetCPUUtilizationPercentage: 70
 
 rollingUpdate:
