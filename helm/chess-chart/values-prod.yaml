@@ -86,6 +86,8 @@ secret:
 auth:
   hpa:
     enabled: true
+  pdb:
+    enabled: true
   secret:
     enabled: false
   externalSecret:
@@ -99,6 +101,8 @@ auth:
 
 room:
   hpa:
+    enabled: true
+  pdb:
     enabled: true
   secret:
     enabled: false
@@ -114,6 +118,8 @@ room:
 
 game:
   hpa:
+    enabled: true
+  pdb:
     enabled: true
   secret:
     enabled: false
