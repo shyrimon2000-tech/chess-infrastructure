@@ -9,6 +9,8 @@ resourcequota:
     limits.memory: "8456Mi"
 
 frontend:
+  image:
+    tag: "1.0.0"
   enabled: true
 
 secret:
@@ -18,6 +20,8 @@ secret:
       key: "/chess-shared/ghcr"
 
 auth:
+  image:
+    tag: "1.0.0"
   hpa:
     enabled: true
   pdb:
@@ -38,6 +42,8 @@ auth:
         key: "/chess-shared/auth-db"
 
 room:
+  image:
+    tag: "1.0.0"
   hpa:
     enabled: true
   pdb:
@@ -58,6 +64,8 @@ room:
         key: "/chess-shared/room-db"
 
 game:
+  image:
+    tag: "1.0.0"
   hpa:
     enabled: true
   pdb:
