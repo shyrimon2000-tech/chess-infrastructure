@@ -9,6 +9,8 @@ resourcequota:
     limits.memory: "4456Mi"
 
 frontend:
+  image:
+    tag: "1.0.0"
   enabled: true
 
 secret:
@@ -18,6 +20,8 @@ secret:
       key: "/chess-shared/ghcr"
 
 auth:
+  image:
+    tag: "1.0.0"
   replicaCount: 1
   secret:
     enabled: false
@@ -35,6 +39,8 @@ auth:
         key: "/chess-shared/auth-db"
 
 room:
+  image:
+    tag: "1.0.0"
   replicaCount: 1
   secret:
     enabled: false
@@ -52,6 +58,8 @@ room:
         key: "/chess-shared/room-db"
 
 game:
+  image:
+    tag: "1.0.0"
   replicaCount: 1
   secret:
     enabled: false

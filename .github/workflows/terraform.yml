@@ -7,6 +7,18 @@ name: Terraform CI/CD
 # for cost, not always-on infra: an apply-on-merge trigger would mean every
 # dev/main merge tries to (re)create a whole EKS cluster, which isn't
 # wanted here.
+#
+# No `paths:` filter on the trigger — deliberately. An earlier version
+# filtered to `terraform/**`, which meant any PR that didn't touch
+# terraform (Helm chart bumps, docs) never got a `plan` check posted at
+# all, permanently blocking merge under branch protection. That got
+# patched with a second, path-filtered decoy workflow just to satisfy the
+# required-check name — which only shifts the same problem to the next
+# untouched path category (there's always another one). Fixed properly
+# instead: `plan` always triggers, and a change-detection step inside the
+# job decides whether to actually run terragrunt or just report "nothing
+# to plan" — one workflow, one job, no path category can ever fall
+# through the cracks.
 on:
   pull_request:
     branches: [dev, main]
@@ -39,11 +51,31 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # pull_request: target branch is github.base_ref (github.ref_name is
-      # empty for this event type). workflow_dispatch: no base_ref exists at
-      # all, use github.ref_name (the branch it was dispatched from) instead.
+      # workflow_dispatch has no PR diff to inspect — it's a manual,
+      # deliberate trigger immediately before apply, so it always runs the
+      # real plan regardless of what changed. Only pull_request runs need
+      # this check to decide between "real plan" and "nothing to plan".
+      - name: Detect terraform changes
+        if: github.event_name == 'pull_request'
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            terraform:
+              - 'terraform/**'
+
+      # Every step below repeats the same condition: run for a real
+      # workflow_dispatch apply-gate, or a pull_request that actually
+      # touches terraform/. Otherwise skipped, and the "No terraform
+      # changes" step at the bottom posts instead — both outcomes report
+      # under the same job name (`plan`), which is all branch protection's
+      # required-check matching cares about.
       - name: Determine environment
         id: env
+        if: github.event_name == 'workflow_dispatch' || steps.filter.outputs.terraform == 'true'
+        # pull_request: target branch is github.base_ref (github.ref_name is
+        # empty for this event type). workflow_dispatch: no base_ref exists at
+        # all, use github.ref_name (the branch it was dispatched from) instead.
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             branch="${{ github.base_ref }}"
@@ -63,18 +95,21 @@ jobs:
           fi
 
       - name: Configure AWS credentials
+        if: github.event_name == 'workflow_dispatch' || steps.filter.outputs.terraform == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ steps.env.outputs.role_arn }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
+        if: github.event_name == 'workflow_dispatch' || steps.filter.outputs.terraform == 'true'
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
 
       - name: Install Terragrunt
+        if: github.event_name == 'workflow_dispatch' || steps.filter.outputs.terraform == 'true'
         run: |
           curl -Lo /usr/local/bin/terragrunt "https://github.com/gruntwork-io/terragrunt/releases/download/v${{ env.TERRAGRUNT_VERSION }}/terragrunt_linux_amd64"
           chmod +x /usr/local/bin/terragrunt
@@ -98,6 +133,7 @@ jobs:
       # with `aws s3 cp` failed — MSYS mangles s3:// URIs containing
       # backslashes — reverted cleanly before anything was touched).
       - name: Terragrunt plan (per unit)
+        if: github.event_name == 'workflow_dispatch' || steps.filter.outputs.terraform == 'true'
         working-directory: ${{ steps.env.outputs.dir }}
         env:
           # Same value the personal `access_entries.personal` entry needs
@@ -117,6 +153,10 @@ jobs:
             fi
           done
           exit $status
+
+      - name: No terraform changes
+        if: github.event_name == 'pull_request' && steps.filter.outputs.terraform != 'true'
+        run: echo "No terraform changes in this PR — skipping plan..."
 
   apply:
     needs: plan
