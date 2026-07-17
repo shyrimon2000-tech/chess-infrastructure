@@ -10,6 +10,8 @@ name: Terraform CI/CD
 on:
   pull_request:
     branches: [dev, main]
+    paths:
+      - 'terraform/**'
   workflow_dispatch: {}
 
 permissions:

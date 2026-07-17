@@ -1,0 +1,32 @@
+name: Terraform CI/CD (skip)
+
+# Matches the required-check job id `plan` from terraform.yml, but for PRs
+# that only touch a values file — no Terraform changed, so there's nothing
+# to plan. Exists purely to satisfy GitHub branch protection's
+# required-check-by-name matching (see terraform.yml's paths filter):
+# without this, a values-only PR (the per-service tag-bump bots targeting
+# values-dev.yaml, or the dev-namespace promotion Job targeting
+# values-staging.yaml/values-prod.yaml) would never get a `plan` check
+# posted at all, and branch protection would block it forever. Deliberately
+# scoped to just the three values files, not the whole chart directory — a
+# template/Chart.yaml change is a real chart change, not a known-safe
+# automated bump, and shouldn't silently skip review this way.
+on:
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - 'helm/chess-chart/values-dev.yaml'
+      - 'helm/chess-chart/values-staging.yaml'
+      - 'helm/chess-chart/values-prod.yaml'
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "No terraform changes in this PR — skipping plan..."
+    
+  cd:
+    runs-on: ubuntu-latest
+    needs: plan
+    steps:
+      - run: echo "Continuous deployment in progress..."
